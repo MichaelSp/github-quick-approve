@@ -14,108 +14,128 @@
 // ==/UserScript==
 
 const insertButton = () => {
-  const prevForm = document.getElementById('quick-approve-form')
-  if (prevForm) prevForm.remove()
+    const prevForm = document.getElementById('quick-approve-form')
+    if (prevForm) prevForm.remove()
 
-  const paths = window.location.pathname.split('/').slice(1, 5)
-  console.log('Github Quick Approve', paths.at(-1))
+    const paths = window.location.pathname.split('/').slice(1, 5)
+    console.log('Github Quick Approve', paths.at(-1))
 
-  const form = document.createElement('form')
-  form.setAttribute('id', 'quick-approve-form')
-  form.setAttribute('action', '/' + paths.join('/') + '/reviews')
-  form.setAttribute('accept-charset', 'UTF-8')
-  form.setAttribute('method', 'post')
+    const form = document.createElement('form')
+    form.setAttribute('id', 'quick-approve-form')
+    form.setAttribute('action', '/' + paths.join('/') + '/reviews')
+    form.setAttribute('accept-charset', 'UTF-8')
+    form.setAttribute('method', 'post')
 
-  const methodInput = document.createElement('input')
-  methodInput.setAttribute('type', 'hidden')
-  methodInput.setAttribute('name', '_method')
-  methodInput.setAttribute('value', 'put')
-  form.append(methodInput)
+    const methodInput = document.createElement('input')
+    methodInput.setAttribute('type', 'hidden')
+    methodInput.setAttribute('name', '_method')
+    methodInput.setAttribute('value', 'put')
+    form.append(methodInput)
 
-  const authenticityTokenInput = document.createElement('input')
-  authenticityTokenInput.setAttribute('type', 'hidden')
-  authenticityTokenInput.setAttribute('name', 'authenticity_token')
-  form.append(authenticityTokenInput)
+    const authenticityTokenInput = document.createElement('input')
+    authenticityTokenInput.setAttribute('type', 'hidden')
+    authenticityTokenInput.setAttribute('name', 'authenticity_token')
+    form.append(authenticityTokenInput)
 
-  const headShaInput = document.createElement('input')
-  headShaInput.setAttribute('type', 'hidden')
-  headShaInput.setAttribute('name', 'head_sha')
-  headShaInput.setAttribute('id', 'head_sha')
-  form.append(headShaInput)
+    const headShaInput = document.createElement('input')
+    headShaInput.setAttribute('type', 'hidden')
+    headShaInput.setAttribute('name', 'head_sha')
+    headShaInput.setAttribute('id', 'head_sha')
+    form.append(headShaInput)
 
-  const csrfInput = document.createElement('input')
-  csrfInput.setAttribute('type', 'hidden')
-  csrfInput.setAttribute('data-csrf', 'true')
-  form.append(csrfInput)
+    const csrfInput = document.createElement('input')
+    csrfInput.setAttribute('type', 'hidden')
+    csrfInput.setAttribute('data-csrf', 'true')
+    form.append(csrfInput)
 
-  const approveRadio = document.createElement('input')
-  approveRadio.setAttribute('type', 'radio')
-  approveRadio.setAttribute('name', 'pull_request_review[event]')
-  approveRadio.setAttribute('value', 'approve')
-  approveRadio.setAttribute('checked', 'true')
-  approveRadio.setAttribute(
-    'style',
-    'visibility: hidden;position: absolute;width: 0;height: 0;overflow: hidden;'
-  )
-  form.append(approveRadio)
+    const approveRadio = document.createElement('input')
+    approveRadio.setAttribute('type', 'radio')
+    approveRadio.setAttribute('name', 'pull_request_review[event]')
+    approveRadio.setAttribute('value', 'approve')
+    approveRadio.setAttribute('checked', 'true')
+    approveRadio.setAttribute(
+        'style',
+        'visibility: hidden;position: absolute;width: 0;height: 0;overflow: hidden;'
+    )
+    form.append(approveRadio)
 
-  const approveButton = document.createElement('button')
-  approveButton.setAttribute('type', 'submit')
-  approveButton.classList.add('btn')
-  approveButton.classList.add('btn-sm')
-  approveButton.classList.add('btn-primary')
-  approveButton.innerText = 'Quick Approve'
-  approveButton.setAttribute('style', 'margin-right: 4px')
-  form.append(approveButton)
+    const approveButton = document.createElement('button')
+    approveButton.setAttribute('type', 'submit')
+    approveButton.classList.add('btn')
+    approveButton.classList.add('btn-sm')
+    approveButton.classList.add('btn-primary')
+    approveButton.innerText = 'Quick Approve'
+    approveButton.setAttribute('style', 'margin-right: 4px')
+    form.append(approveButton)
+    var xhr = new XMLHttpRequest()
+    xhr.onreadystatechange = function () {
+        // console.debug('onreadystatechange')
+        if (xhr.readyState === 4) {
+            // console.debug('xhr.readyState')
+            if (/name="pull_request_review\[event\]" value="approve" disabled/g.test(xhr.responseText)) {
+                console.debug('You do not have permission to approve this PR')
+                return
+            }
 
-  var xhr = new XMLHttpRequest()
-  xhr.onreadystatechange = function () {
-    // console.debug('onreadystatechange')
-    if (xhr.readyState === 4) {
-      // console.debug('xhr.readyState')
-      if (
-        /name="pull_request_review\[event\]" value="approve" disabled/g.test(
-          xhr.responseText
-        )
-      ) {
-        console.debug('You do not have permission to approve this PR')
-        return
-      }
+            if (xhr.status !== 200) {
+                console.debug('Error', xhr.status, xhr.statusText)
+                return
+            }
+            /*
+             /<form id="pull_requests_submit_review".*name="authenticity_token" value="([^"]+)".+\n\s+.+id="head_sha" value="([^"]+)".+\n.*\n.*\n.+value="([^"]+)" data-csrf="true"/g
+            */
 
-      const getCsrfToken =
-        /<form id="pull_requests_submit_review".*name="authenticity_token" value="([^"]+)".+\n\s+.+id="head_sha" value="([^"]+)".+\n.*\n.*\n.+value="([^"]+)" data-csrf="true"/g
-      const [_, authenticity_token, head_sha, csrf] = getCsrfToken.exec(
-        xhr.responseText
-      )
-      if (!(authenticity_token && head_sha && csrf)) {
-        console.log({ authenticity_token, head_sha, csrf })
-        console.log('Missing data, cannot create Quick Approve button')
-        return
-      }
-      authenticityTokenInput.setAttribute('value', authenticity_token)
-      headShaInput.setAttribute('value', head_sha)
-      csrfInput.setAttribute('value', csrf)
+            const parser = new DOMParser()
+            const responseXML = parser.parseFromString(xhr.responseText, 'text/html')
 
-      const headerActions =
-        document.getElementsByClassName('gh-header-actions')[0]
-      headerActions.append(form)
+            const reviewForm = responseXML.querySelector('form#pull_requests_submit_review')
+            console.debug('xhr.responseXML', reviewForm)
+
+            const csrfInputValue = reviewForm.querySelector('input[data-csrf="true"]').value
+            const authenticityTokenInputValue = reviewForm.querySelector('input[name="authenticity_token"]').value
+            const headShaInputValue = reviewForm.querySelector('input[name="head_sha"]').value
+
+            if (!csrfInputValue || !authenticityTokenInputValue || !headShaInputValue) {
+                console.debug('Error: Could not find required input values')
+                return
+            }
+
+            csrfInput.setAttribute('value', csrfInputValue)
+            authenticityTokenInput.setAttribute('value', authenticityTokenInputValue)
+            headShaInput.setAttribute('value', headShaInputValue)
+
+            const headerActions = document.getElementsByClassName('gh-header-actions')[0]
+            headerActions.append(form)
+        }
     }
-  }
-  xhr.open('GET', 'https://github.com/' + paths.join('/') + '/files')
-  xhr.send()
+    xhr.open('GET', 'https://github.com/' + paths.join('/') + '/files')
+    xhr.send()
+
+    const headerActions = document.querySelector('.gh-header-actions');
+    if (headerActions) {
+        headerActions.append(form);
+    }
 }
 
-const observeUrlChange = () => {
-  let oldHref = document.location.href
-  const body = document.body
-  const observer = new MutationObserver((mutations) => {
+let oldHref = document.location.href
+const documentMutationObserver = new MutationObserver((_) => {
     if (oldHref !== document.location.href) {
-      oldHref = document.location.href
-      if (document.location.pathname.match(/\/pull\/\d+/)) insertButton()
+        oldHref = document.location.href
+        if (document.location.pathname.match(/\/pull\/\d+/)) {
+            insertButton()
+        }
     }
-  })
-  observer.observe(body, { childList: true, subtree: true })
-  insertButton()
-}
+})
 
-window.onload = observeUrlChange
+document.addEventListener('DOMContentLoaded', () => {
+    console.log("QApprove installed - DOMContentLoaded. Path", window.location.pathname)
+    documentMutationObserver.observe(document.body, { childList: true, subtree: true })
+    const path = window.location.pathname
+    console.log("QApprove installed - DOMContentLoaded - path", path)
+    if (path.match(/\/pull\/\d+/)) {
+        console.log("QApprove installed - DOMContentLoaded - path match")
+        insertButton()
+    }
+})
+window.onload = documentMutationObserver
+console.log("QApprove installed - onload")
