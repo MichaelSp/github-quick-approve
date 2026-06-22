@@ -4,9 +4,9 @@
 // @namespace   https://github.com/monodyle
 // @author      monodyle
 // @license     MIT
-// @version     1.0.0
+// @version     2.0.0
 // @description Quick Approve for Github PR
-// @include     https://github.com/*/pull/*
+// @match       https://github.com/*
 // @homepageURL https://github.com/monodyle/github-quick-approve
 // @supportURL  https://github.com/monodyle/github-quick-approve/issues
 // @downloadURL https://raw.githubusercontent.com/monodyle/github-quick-approve/main/GithubQuickApprove.user.js
@@ -18,9 +18,11 @@ function prIsOpenAndNotApproved() {
   const currentPRIsAlreadyApproved = document.querySelector(
     'input[name="pull_request_review[event]"][value="approve"]:checked'
   );
+  const sidebarApproved = Array.from(
+    document.querySelectorAll('.js-issue-sidebar-form tool-tip')
+  ).some(el => el.textContent.includes('approved these changes'));
 
-
-  return (!currentPRIsAlreadyApproved && currentPRIsOpen)
+  return (!currentPRIsAlreadyApproved && !sidebarApproved && currentPRIsOpen)
 }
 
 function updateFormWithRemoteData(form, csrfInput, authenticityTokenInput, headShaInput) {
@@ -88,7 +90,7 @@ const insertButton = () => {
   if (prevForm) prevForm.remove();
 
   if (!prIsOpenAndNotApproved()) {
-    console.log("not open OR already approved")
+    console.warn("not open OR already approved")
     return;
   }
 
@@ -138,39 +140,61 @@ const insertButton = () => {
   approveButton.classList.add("btn-sm");
   approveButton.classList.add("btn-primary");
 
-  approveButton.innerText = "Quick Approve";
+  approveButton.innerText = "Quick Approve ✅";
   approveButton.setAttribute("style", "margin-right: 4px");
   form.append(approveButton);
 
-  updateFormWithRemoteData(form, csrfInput, authenticityTokenInput, headShaInput);
+  form.addEventListener("submit", (e) => {
+    e.preventDefault();
+    const data = new FormData(form);
+    fetch(githubHost + form.getAttribute("action"), { method: "POST", body: data })
+      .then(() => {
+        const parts = window.location.pathname.split("/").slice(1, 3);
+        window.location.href = `/${parts.join("/")}/pulls`;
+      });
+  });
 
-  const headerActions = document.querySelector(".gh-header-actions");
-  if (headerActions) {
-    headerActions.append(form);
-  }
+  updateFormWithRemoteData(form, csrfInput, authenticityTokenInput, headShaInput);
 };
 
 let oldHref = document.location.pathname;
 const githubHost = window.location.origin;
-function checkAndInsert() {
-    const isPullRequestPage = /^\/[^/]+\/[^/]+\/pull\/\d+/.test(window.location.pathname);
-    if (isPullRequestPage) {
-      window.addEventListener("DOMContentLoaded", insertButton, { once: true });
-    }
-};
-const observeUrlChange = () => {
-    // For SPA navigation (GitHub uses pjax)
+
+const isPullRequestPage = () => /^\/[^/]+\/[^/]+\/pull\/\d+/.test(window.location.pathname);
+
+function waitForElement(selector, timeout = 5000) {
+  return new Promise((resolve, reject) => {
+    const el = document.querySelector(selector);
+    if (el) return resolve(el);
     const observer = new MutationObserver(() => {
-        if (window.location.pathname !== oldHref) {
-            oldHref = window.location.pathname;
-            checkAndInsert();
-        }
+      const el = document.querySelector(selector);
+      if (el) { observer.disconnect(); resolve(el); }
     });
-
     observer.observe(document.body, { childList: true, subtree: true });
+    setTimeout(() => { observer.disconnect(); reject(new Error(`Timeout waiting for ${selector}`)); }, timeout);
+  });
+}
 
-    // Initial check
-    checkAndInsert();
+function checkAndInsert() {
+  if (!isPullRequestPage()) return;
+  if (document.readyState === "loading") {
+    window.addEventListener("DOMContentLoaded", insertButton, { once: true });
+  } else {
+    waitForElement(".gh-header-actions").then(insertButton).catch(() => {});
+  }
+}
+
+const observeUrlChange = () => {
+  const observer = new MutationObserver(() => {
+    if (window.location.pathname !== oldHref) {
+      oldHref = window.location.pathname;
+      checkAndInsert();
+    }
+  });
+
+  observer.observe(document.body, { childList: true, subtree: true });
+
+  checkAndInsert();
 };
 
 observeUrlChange();
