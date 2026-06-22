@@ -204,7 +204,7 @@ document.addEventListener("keydown", (e) => {
     const form = document.getElementById("quick-approve-form");
     if (form) {
       e.preventDefault();
-      form.submit();
+      form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
     }
   }
 });
