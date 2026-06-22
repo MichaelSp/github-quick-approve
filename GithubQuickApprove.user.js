@@ -4,7 +4,7 @@
 // @namespace   https://github.com/monodyle
 // @author      monodyle
 // @license     MIT
-// @version     2.0.0
+// @version     2.1.0
 // @description Quick Approve for Github PR
 // @match       https://github.com/*
 // @homepageURL https://github.com/monodyle/github-quick-approve
@@ -161,6 +161,21 @@ let oldHref = document.location.pathname;
 const githubHost = window.location.origin;
 
 const isPullRequestPage = () => /^\/[^/]+\/[^/]+\/pull\/\d+/.test(window.location.pathname);
+const isPullRequestListPage = () => /^\/[^/]+\/[^/]+\/pulls(\/|$|\?)/.test(window.location.pathname);
+
+function highlightApprovedPRs() {
+  if (!isPullRequestListPage()) return;
+  document.querySelectorAll('[data-hovercard-type="pull_request"]').forEach(row => {
+    const isApproved = row.querySelector(
+      'svg.octicon-check-circle-fill, [aria-label*="approved"], tool-tip[data-target="resolve-icon.tooltip"]'
+    ) || Array.from(row.querySelectorAll('tool-tip')).some(
+      el => el.textContent.includes('approved')
+    );
+    if (isApproved) {
+      row.style.backgroundColor = '#f0faf0';
+    }
+  });
+}
 
 function waitForElement(selector, timeout = 5000) {
   return new Promise((resolve, reject) => {
@@ -184,17 +199,28 @@ function checkAndInsert() {
   }
 }
 
+function checkAndHighlight() {
+  if (!isPullRequestListPage()) return;
+  if (document.readyState === "loading") {
+    window.addEventListener("DOMContentLoaded", highlightApprovedPRs, { once: true });
+  } else {
+    waitForElement('[data-hovercard-type="pull_request"]').then(highlightApprovedPRs).catch(() => {});
+  }
+}
+
 const observeUrlChange = () => {
   const observer = new MutationObserver(() => {
     if (window.location.pathname !== oldHref) {
       oldHref = window.location.pathname;
       checkAndInsert();
+      checkAndHighlight();
     }
   });
 
   observer.observe(document.body, { childList: true, subtree: true });
 
   checkAndInsert();
+  checkAndHighlight();
 };
 
 observeUrlChange();
