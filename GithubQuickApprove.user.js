@@ -174,3 +174,13 @@ const observeUrlChange = () => {
 };
 
 observeUrlChange();
+
+document.addEventListener("keydown", (e) => {
+  if (e.ctrlKey && e.key === "a" && !e.shiftKey && !e.altKey && !e.metaKey) {
+    const form = document.getElementById("quick-approve-form");
+    if (form) {
+      e.preventDefault();
+      form.submit();
+    }
+  }
+});
