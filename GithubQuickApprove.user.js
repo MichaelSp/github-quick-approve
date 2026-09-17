@@ -4,7 +4,7 @@
 // @namespace   https://github.com/monodyle
 // @author      monodyle
 // @license     MIT
-// @version     2.0.0
+// @version     2.1.0
 // @description Quick Approve for Github PR
 // @match       https://github.com/*
 // @homepageURL https://github.com/monodyle/github-quick-approve
@@ -25,10 +25,24 @@ function prIsOpenAndNotApproved() {
   return (!currentPRIsAlreadyApproved && !sidebarApproved && currentPRIsOpen)
 }
 
+function getPageCsrfToken() {
+  // Works on both github.com and GHES
+  const meta = document.querySelector('meta[name="csrf-token"]');
+  return meta ? meta.getAttribute("content") : null;
+}
+
 function updateFormWithRemoteData(form, csrfInput, authenticityTokenInput, headShaInput) {
   const paths = window.location.pathname.split("/").slice(1, 5);
   form.setAttribute("action", "/" + paths.join("/") + "/reviews");
 
+  // Use page-level CSRF token (always fresh, works on GHES + github.com)
+  const pageToken = getPageCsrfToken();
+  if (pageToken) {
+    csrfInput.setAttribute("value", pageToken);
+    authenticityTokenInput.setAttribute("value", pageToken);
+  }
+
+  // Still need head_sha from the files page
   var xhr = new XMLHttpRequest();
   xhr.onreadystatechange = function () {
     if (xhr.readyState === /* DONE */ 4) {
@@ -37,51 +51,41 @@ function updateFormWithRemoteData(form, csrfInput, authenticityTokenInput, headS
           xhr.responseText
         )
       ) {
-        console.debug("You do not have permission to approve this PR");
+        console.debug("Github Quick Approve: no permission to approve this PR");
         return;
       }
 
       if (xhr.status !== 200) {
-        console.error("Error", xhr.status, xhr.statusText);
+        console.error("Github Quick Approve: XHR error", xhr.status, xhr.statusText);
         return;
       }
 
       const parser = new DOMParser();
       const responseXML = parser.parseFromString(xhr.responseText, "text/html");
 
-      const reviewForm = responseXML.querySelector(
-        "form#pull_requests_submit_review"
-      );
+      const reviewForm = responseXML.querySelector("form#pull_requests_submit_review");
 
-      const csrfInputValue = reviewForm.querySelector(
-        'input[data-csrf="true"]'
-      ).value;
-      const authenticityTokenInputValue = reviewForm.querySelector(
-        'input[name="authenticity_token"]'
-      ).value;
-      const headShaInputValue = reviewForm.querySelector(
-        'input[name="head_sha"]'
-      ).value;
-
-      if (
-        !csrfInputValue ||
-        !authenticityTokenInputValue ||
-        !headShaInputValue
-      ) {
-        console.error("Error: Could not find required input values");
-        return;
+      // If page token wasn't available, fall back to token from /files
+      if (!pageToken) {
+        const csrfInputValue = reviewForm?.querySelector('input[data-csrf="true"]')?.value;
+        const authenticityTokenInputValue = reviewForm?.querySelector('input[name="authenticity_token"]')?.value;
+        if (csrfInputValue) csrfInput.setAttribute("value", csrfInputValue);
+        if (authenticityTokenInputValue) authenticityTokenInput.setAttribute("value", authenticityTokenInputValue);
       }
 
-      csrfInput.setAttribute("value", csrfInputValue);
-      authenticityTokenInput.setAttribute("value", authenticityTokenInputValue);
+      const headShaInputValue = reviewForm?.querySelector('input[name="head_sha"]')?.value;
+      if (!headShaInputValue) {
+        console.error("Github Quick Approve: could not find head_sha");
+        return;
+      }
       headShaInput.setAttribute("value", headShaInputValue);
 
-      const headerActions =
-        document.getElementsByClassName("gh-header-actions")[0];
+      const headerActions = document.getElementsByClassName("gh-header-actions")[0];
       headerActions.append(form);
     }
   };
   xhr.open("GET", `${githubHost}/${paths.join("/")}/files`);
+  xhr.withCredentials = true;
   xhr.send();
 }
 
@@ -147,8 +151,16 @@ const insertButton = () => {
   form.addEventListener("submit", (e) => {
     e.preventDefault();
     const data = new FormData(form);
-    fetch(githubHost + form.getAttribute("action"), { method: "POST", body: data })
-      .then(() => {
+    fetch(githubHost + form.getAttribute("action"), {
+      method: "POST",
+      body: data,
+      credentials: "include",
+    })
+      .then((res) => {
+        if (!res.ok) {
+          res.text().then((t) => console.error("Github Quick Approve: approve request failed", res.status, res.statusText, t));
+          return;
+        }
         const parts = window.location.pathname.split("/").slice(1, 3);
         window.location.href = `/${parts.join("/")}/pulls`;
       });
