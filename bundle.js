@@ -33,7 +33,7 @@ const commonManifest = {
     128: 'icon_128.png',
     256: 'icon_256.png',
   },
-  host_permissions: ['https://www.github.com/', 'http://www.github.com/'],
+  host_permissions: ['https://www.github.com/', 'http://www.github.com/', 'https://api.github.com/'],
 }
 
 // CHROME

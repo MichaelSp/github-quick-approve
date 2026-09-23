@@ -1,101 +1,94 @@
+const getFetchNonce = () => {
+  const meta = document.querySelector('meta[name="fetch-nonce"]')
+  return meta ? meta.getAttribute('content') : null
+}
+
 const insertButton = () => {
-  const prevForm = document.getElementById('quick-approve-form')
-  if (prevForm) prevForm.remove()
+  const prev = document.getElementById('quick-approve-btn')
+  if (prev) prev.remove()
 
   const paths = window.location.pathname.split('/').slice(1, 5)
   console.log('Github Quick Approve', paths.at(-1))
+  const [owner, repo, , prNumber] = paths
 
-  const form = document.createElement('form')
-  form.setAttribute('id', 'quick-approve-form')
-  form.setAttribute('action', '/' + paths.join('/') + '/reviews')
-  form.setAttribute('accept-charset', 'UTF-8')
-  form.setAttribute('method', 'post')
+  const button = document.createElement('button')
+  button.setAttribute('id', 'quick-approve-btn')
+  button.classList.add('btn', 'btn-sm', 'btn-primary')
+  button.innerText = 'Quick Approve'
+  button.setAttribute('style', 'margin-right: 4px')
 
-  const methodInput = document.createElement('input')
-  methodInput.setAttribute('type', 'hidden')
-  methodInput.setAttribute('name', '_method')
-  methodInput.setAttribute('value', 'put')
-  form.append(methodInput)
+  button.addEventListener('click', async (e) => {
+    e.preventDefault()
+    button.disabled = true
+    button.innerText = 'Approving…'
 
-  const authenticityTokenInput = document.createElement('input')
-  authenticityTokenInput.setAttribute('type', 'hidden')
-  authenticityTokenInput.setAttribute('name', 'authenticity_token')
-  form.append(authenticityTokenInput)
+    try {
+      const nonce = getFetchNonce()
+      if (!nonce) throw new Error('fetch-nonce not found')
 
-  const headShaInput = document.createElement('input')
-  headShaInput.setAttribute('type', 'hidden')
-  headShaInput.setAttribute('name', 'head_sha')
-  headShaInput.setAttribute('id', 'head_sha')
-  form.append(headShaInput)
-
-  const csrfInput = document.createElement('input')
-  csrfInput.setAttribute('type', 'hidden')
-  csrfInput.setAttribute('data-csrf', 'true')
-  form.append(csrfInput)
-
-  const approveRadio = document.createElement('input')
-  approveRadio.setAttribute('type', 'radio')
-  approveRadio.setAttribute('name', 'pull_request_review[event]')
-  approveRadio.setAttribute('value', 'approve')
-  approveRadio.setAttribute('checked', 'true')
-  approveRadio.setAttribute(
-    'style',
-    'visibility: hidden;position: absolute;width: 0;height: 0;overflow: hidden;'
-  )
-  form.append(approveRadio)
-
-  const approveButton = document.createElement('button')
-  approveButton.setAttribute('type', 'submit')
-  approveButton.classList.add('btn')
-  approveButton.classList.add('btn-sm')
-  approveButton.classList.add('btn-primary')
-  approveButton.innerText = 'Quick Approve'
-  approveButton.setAttribute('style', 'margin-right: 4px')
-  form.append(approveButton)
-
-  var xhr = new XMLHttpRequest()
-  xhr.onreadystatechange = function () {
-    // console.debug('onreadystatechange')
-    if (xhr.readyState === 4) {
-      // console.debug('xhr.readyState')
-      if (/name="pull_request_review\[event\]" value="approve" disabled/g.test(xhr.responseText)) {
-        console.debug('You do not have permission to approve this PR')
-        return
-      }
-
-      const getCsrfToken =
-        /<form id="pull_requests_submit_review".*name="authenticity_token" value="([^"]+)".+\n\s+.+id="head_sha" value="([^"]+)".+\n.*\n.*\n.+value="([^"]+)" data-csrf="true"/g
-      const [_, authenticity_token, head_sha, csrf] = getCsrfToken.exec(
-        xhr.responseText
+      const prRes = await fetch(
+        `https://api.github.com/repos/${owner}/${repo}/pulls/${prNumber}`,
+        { headers: { Accept: 'application/vnd.github.v3+json' } }
       )
-      if (!(authenticity_token && head_sha && csrf)) {
-        console.log({ authenticity_token, head_sha, csrf })
-        console.log('Missing data, cannot create Quick Approve button')
-        return
-      }
-      authenticityTokenInput.setAttribute('value', authenticity_token)
-      headShaInput.setAttribute('value', head_sha)
-      csrfInput.setAttribute('value', csrf)
+      const pr = await prRes.json()
+      const head_sha = pr.head && pr.head.sha
+      if (!head_sha) throw new Error('head_sha not found')
 
-      const headerActions =
-        document.getElementsByClassName('gh-header-actions')[0]
-      headerActions.append(form)
+      const body = new URLSearchParams({
+        '_method': 'put',
+        'pull_request_review[event]': 'approve',
+        'head_sha': head_sha,
+      })
+
+      const res = await fetch(
+        `https://github.com/${owner}/${repo}/pull/${prNumber}/reviews`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/x-www-form-urlencoded',
+            'X-Fetch-Nonce': nonce,
+            'X-Requested-With': 'XMLHttpRequest',
+            'github-verified-fetch': 'true',
+          },
+          body: body.toString(),
+        }
+      )
+
+      if (res.ok) {
+        button.innerText = '✓ Approved'
+        button.classList.remove('btn-primary')
+        button.classList.add('btn-success')
+      } else {
+        throw new Error(`HTTP ${res.status}`)
+      }
+    } catch (err) {
+      console.error('Quick Approve error:', err)
+      button.innerText = '✗ Failed'
+      button.disabled = false
     }
+  })
+
+  // Find the "Code" button (stable sibling) and inject before it
+  const codeBtn = [...document.querySelectorAll('button')].find(
+    b => b.className.includes('PullRequestCodeButton') ||
+         b.textContent.trim() === 'Code'
+  )
+  if (!codeBtn || !codeBtn.parentElement) {
+    console.log('Cannot find Code button container')
+    return
   }
-  xhr.open('GET', 'https://github.com/' + paths.join('/') + '/files')
-  xhr.send()
+  codeBtn.parentElement.insertBefore(button, codeBtn)
 }
 
 const observeUrlChange = () => {
   let oldHref = document.location.href
-  const body = document.body
-  const observer = new MutationObserver((mutations) => {
+  const observer = new MutationObserver(() => {
     if (oldHref !== document.location.href) {
       oldHref = document.location.href
       if (document.location.pathname.match(/\/pull\/\d+/)) insertButton()
     }
   })
-  observer.observe(body, { childList: true, subtree: true })
+  observer.observe(document.body, { childList: true, subtree: true })
   insertButton()
 }
 
