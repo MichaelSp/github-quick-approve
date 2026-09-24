@@ -1,19 +1,3 @@
-// ==UserScript==
-// @name        Github Quick Approve
-// @icon        https://raw.githubusercontent.com/monodyle/github-quick-approve/main/assets/icons/icon_256.png
-// @namespace   https://github.com/monodyle
-// @author      monodyle
-// @license     MIT
-// @version     3.7.7
-// @description Quick Approve for Github PR
-// @match       https://github.com/*
-// @match       https://github.tools.sap/*
-// @homepageURL https://github.com/monodyle/github-quick-approve
-// @supportURL  https://github.com/monodyle/github-quick-approve/issues
-// @downloadURL file:///Users/d067570/src/me/browser-extensions/github-quick-approve/GithubQuickApprove.user.js
-// @updateURL   file:///Users/d067570/src/me/browser-extensions/github-quick-approve/GithubQuickApprove.user.js
-// ==/UserScript==
-
 // Shared core logic — used by index.js (extension) and GithubQuickApprove.user.js (userscript).
 
 const SCRIPT_VERSION = '3.7.7'
@@ -40,14 +24,14 @@ const reviewUiDebug = (step) => console.debug(`[Quick Approve v${SCRIPT_VERSION}
   })),
 })
 
-const getFetchNonce = () => {
+export const getFetchNonce = () => {
   const meta = document.querySelector('meta[name="fetch-nonce"]')
   return meta ? meta.getAttribute('content') : null
 }
 
 // GitHub's current PR page exposes the CSRF token in a meta tag. This works on
 // github.com's React UI and GHES; old GHES versions need the /files form fallback.
-const getPageCsrfToken = () => {
+export const getPageCsrfToken = () => {
   const token =
     document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') ??
     document.querySelector('input[name="authenticity_token"]')?.value ??
@@ -55,7 +39,7 @@ const getPageCsrfToken = () => {
   return token || null
 }
 
-const getReviewFormData = async ({ owner, repo, prNumber, origin }) => {
+export const getReviewFormData = async ({ owner, repo, prNumber, origin }) => {
   // GHES validates the review form's scoped authenticity token; the generic
   // PR-page CSRF meta token is not interchangeable.
   const res = await fetch(`${origin}/${owner}/${repo}/pull/${prNumber}/files`, {
@@ -78,12 +62,12 @@ const getReviewFormData = async ({ owner, repo, prNumber, origin }) => {
 // Works on both github.com and GHES (e.g. github.example.com)
 // GitHub.com has moved review submission behind its native React dialog.
 // Let that dialog submit the review instead of duplicating its private POST.
-const beginGithubApproval = ({ owner, repo, prNumber }) => {
+export const beginGithubApproval = ({ owner, repo, prNumber }) => {
   sessionStorage.setItem(GITHUB_REVIEW_FLOW_KEY, 'true')
   window.location.assign(`/${owner}/${repo}/pull/${prNumber}/changes`)
 }
 
-const resumeGithubApproval = () => {
+export const resumeGithubApproval = () => {
   if (location.hostname !== 'github.com' || !sessionStorage.getItem(GITHUB_REVIEW_FLOW_KEY)) return
   if (!/^\/[^/]+\/[^/]+\/pull\/\d+\/changes$/.test(location.pathname)) return
 
@@ -128,25 +112,25 @@ const resumeGithubApproval = () => {
   }, 40, () => reviewUiDebug('Review changes button not found after 10 seconds'))
 }
 
-const getApiBase = (location = window.location) => {
+export const getApiBase = (location = window.location) => {
   const { hostname, origin } = location
   if (hostname === 'github.com') return 'https://api.github.com'
   return `${origin}/api/v3`
 }
 
 // Overridable in tests — avoids real navigation and setTimeout races
-let navigate = (url) => setTimeout(() => { window.location.href = url }, 800)
-const setNavigate = (fn) => { navigate = fn }
+export let navigate = (url) => setTimeout(() => { window.location.href = url }, 800)
+export const setNavigate = (fn) => { navigate = fn }
 
-const isPullRequestPage = (location = window.location) =>
+export const isPullRequestPage = (location = window.location) =>
   /^\/[^/]+\/[^/]+\/pull\/\d+/.test(location.pathname)
 
 // header container selector: github.com (Primer React) + GHES (classic)
-const HEADER_ACTIONS_SELECTOR = '.gh-header-actions, [class*="PageHeader-Actions"]'
+export const HEADER_ACTIONS_SELECTOR = '.gh-header-actions, [class*="PageHeader-Actions"]'
 
 // Read the PR head commit from the rendered page. GHES keeps it in a hidden
 // `head_sha` input; GitHub.com may embed it in JSON as `headRefOid`.
-const getHeadShaFromPage = () => {
+export const getHeadShaFromPage = () => {
   const sha = '[a-f0-9]{40,64}' // SHA-1 and SHA-256 repositories
   const inputs = document.querySelectorAll('input[name="head_sha"]')
   const hiddenSha = inputs[0]?.value
@@ -180,7 +164,7 @@ const getHeadShaFromPage = () => {
   return null
 }
 
-function waitForElement(selector, timeout = 5000) {
+export function waitForElement(selector, timeout = 5000) {
   return new Promise((resolve, reject) => {
     const el = document.querySelector(selector)
     if (el) return resolve(el)
@@ -193,7 +177,7 @@ function waitForElement(selector, timeout = 5000) {
   })
 }
 
-const insertButton = () => {
+export const insertButton = () => {
   if (!isPullRequestPage()) return
 
   const prev = document.getElementById('quick-approve-btn')
@@ -307,7 +291,7 @@ const insertButton = () => {
 }
 
 // Ctrl+A on a PR page triggers the Quick Approve button
-const setupHotkey = () => {
+export const setupHotkey = () => {
   // Turbo/PJAX navigation calls observeUrlChange repeatedly; install once.
   if (document.documentElement.dataset.quickApproveHotkeySetup) return
   document.documentElement.dataset.quickApproveHotkeySetup = 'true'
@@ -322,7 +306,7 @@ const setupHotkey = () => {
   })
 }
 
-const observeUrlChange = () => {
+export const observeUrlChange = () => {
   console.debug(`[Quick Approve v${SCRIPT_VERSION}] boot`, {
     url: location.href,
     headerActions: document.querySelectorAll(HEADER_ACTIONS_SELECTOR).length,
@@ -361,11 +345,4 @@ const observeUrlChange = () => {
   insertWhenReady()
   resumeGithubApproval()
   setupHotkey()
-}
-
-
-if (document.readyState === 'loading') {
-  document.addEventListener('DOMContentLoaded', observeUrlChange, { once: true })
-} else {
-  observeUrlChange()
 }

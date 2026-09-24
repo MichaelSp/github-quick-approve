@@ -10,9 +10,13 @@
   "author": "monodyle <monodylh@gmail.com>",
   "license": "MIT",
   "scripts": {
-    "zip": "node bundle.js --args zip"
+    "test": "vitest run",
+    "test:watch": "vitest"
   },
   "devDependencies": {
-    "archiver": "5.3.1"
+    "@vitest/coverage-v8": "^5.0.1",
+    "archiver": "5.3.1",
+    "jsdom": "^30.1.1",
+    "vitest": "^5.0.1"
   }
 }
