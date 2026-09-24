@@ -4,6 +4,7 @@ import {
   getReviewFormData,
   getApiBase,
   getHeadShaFromPage,
+  getApprovalBlockReason,
   isPullRequestPage,
   HEADER_ACTIONS_SELECTOR,
   waitForElement,
@@ -251,6 +252,11 @@ describe('HEADER_ACTIONS_SELECTOR', () => {
     document.body.innerHTML = '<div class="some-other-class"></div>'
     expect(document.querySelector(HEADER_ACTIONS_SELECTOR)).toBeNull()
   })
+
+  it('skips hidden GitHub header action containers', () => {
+    document.body.innerHTML = '<div class="prc-PageHeader-Actions-abc d-none"></div><div class="prc-PageHeader-Actions-xyz"></div>'
+    expect(document.querySelector(HEADER_ACTIONS_SELECTOR)?.className).toContain('xyz')
+  })
 })
 
 // ─── insertButton — github.com layout ────────────────────────────────────────
@@ -280,6 +286,17 @@ describe('insertButton on github.com', () => {
     expect(document.getElementById('quick-approve-btn').innerText).toBe('Quick Approve ✅')
   })
 
+  it('shows loading state if a GitHub approval flow is pending', async () => {
+    sessionStorage.setItem('quickApproveGithubReviewPending', 'true')
+    insertButton()
+    await vi.waitFor(() => expect(document.getElementById('quick-approve-btn')).toBeTruthy())
+    const button = document.getElementById('quick-approve-btn')
+    expect(button.disabled).toBe(true)
+    expect(button.getAttribute('aria-busy')).toBe('true')
+    expect(button.textContent).toContain('Approving…')
+    sessionStorage.clear()
+  })
+
   it('removes a previous button before inserting a new one', async () => {
     insertButton()
     await vi.waitFor(() => expect(document.getElementById('quick-approve-btn')).toBeTruthy())
@@ -294,6 +311,26 @@ describe('insertButton on github.com', () => {
     setLocation('https://github.com/myorg/myrepo/pulls')
     insertButton()
     expect(document.getElementById('quick-approve-btn')).toBeNull()
+  })
+
+  it.each([
+    ['Approved these changes', 'already approved'],
+    ['This branch has conflicts that must be resolved', 'has merge conflicts'],
+  ])('disables approval when PR %s', async (pageText, reason) => {
+    document.body.insertAdjacentHTML('beforeend', `<p>${pageText}</p>`)
+    insertButton()
+    await vi.waitFor(() => expect(document.getElementById('quick-approve-btn')).toBeTruthy())
+    const button = document.getElementById('quick-approve-btn')
+    expect(button.disabled).toBe(true)
+    expect(button.innerText).toBe(`Cannot approve: ${reason}`)
+  })
+
+  it.each([
+    ['Approved these changes', 'already approved'],
+    ['This branch has conflicts that must be resolved', 'has merge conflicts'],
+  ])('recognizes %s as %s', (pageText, reason) => {
+    document.body.innerHTML = `<p>${pageText}</p>`
+    expect(getApprovalBlockReason()).toBe(reason)
   })
 })
 
@@ -348,13 +385,18 @@ describe('GitHub native review flow', () => {
   })
 
   for (const [entrypoint, controls] of [
-    ['Review changes', '<input type="radio" value="approve"><button>Submit review</button>'],
+    ['Review changes', '<div role="dialog"><input type="radio" value="approve"><button>Submit review</button></div>'],
     ['Submit reviewReview', '<button>Approve changes</button>'],
   ]) {
     it(`opens and submits approval from ${entrypoint}`, async () => {
       setLocation('https://github.com/myorg/myrepo/pull/99/changes')
       sessionStorage.setItem('quickApproveGithubReviewPending', 'true')
       document.body.innerHTML = `<button>${entrypoint}</button>${controls}`
+      if (entrypoint === 'Review changes') {
+        document.querySelector('[role="dialog"] button').addEventListener('click', () =>
+          document.querySelector('[role="dialog"]').remove()
+        )
+      }
       resumeGithubApproval()
       await vi.waitFor(() => expect(sessionStorage.getItem('quickApproveGithubReviewPending')).toBeNull())
     })

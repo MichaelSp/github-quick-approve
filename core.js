@@ -1,6 +1,6 @@
 // Shared core logic — used by index.js (extension) and GithubQuickApprove.user.js (userscript).
 
-const SCRIPT_VERSION = '3.7.7'
+const SCRIPT_VERSION = '3.7.11'
 const GITHUB_REVIEW_FLOW_KEY = 'quickApproveGithubReviewPending'
 
 const findButtonByText = (text) =>
@@ -8,6 +8,8 @@ const findButtonByText = (text) =>
 
 const findButtonMatching = (pattern) =>
   [...document.querySelectorAll('button')].find((button) => pattern.test(button.textContent.trim()))
+
+const click = (element) => element?.click()
 
 const retry = (action, attempts = 20, onExhausted) => {
   if (action()) return
@@ -62,8 +64,23 @@ export const getReviewFormData = async ({ owner, repo, prNumber, origin }) => {
 // Works on both github.com and GHES (e.g. github.example.com)
 // GitHub.com has moved review submission behind its native React dialog.
 // Let that dialog submit the review instead of duplicating its private POST.
+const setApprovalInProgress = (button = document.getElementById('quick-approve-btn')) => {
+  if (!button) return
+  if (!document.getElementById('quick-approve-spinner-style')) {
+    document.head.insertAdjacentHTML('beforeend', '<style id="quick-approve-spinner-style">@keyframes quick-approve-spin{to{transform:rotate(360deg)}}.quick-approve-spinner{display:inline-block;width:1em;height:1em;margin-left:.35em;vertical-align:-.18em;border:2px solid currentColor;border-right-color:transparent;border-radius:50%;animation:quick-approve-spin .65s linear infinite}</style>')
+  }
+  button.disabled = true
+  button.textContent = 'Approving…'
+  const spinner = document.createElement('span')
+  spinner.className = 'quick-approve-spinner'
+  spinner.setAttribute('aria-hidden', 'true')
+  button.append(spinner)
+  button.setAttribute('aria-busy', 'true')
+}
+
 export const beginGithubApproval = ({ owner, repo, prNumber }) => {
   sessionStorage.setItem(GITHUB_REVIEW_FLOW_KEY, 'true')
+  setApprovalInProgress()
   window.location.assign(`/${owner}/${repo}/pull/${prNumber}/changes`)
 }
 
@@ -76,14 +93,14 @@ export const resumeGithubApproval = () => {
     // "Submit review Review" control on Files changed.
     const reviewChanges = findButtonMatching(/^(Review changes|Submit review)/)
     if (!reviewChanges) return false
-    reviewChanges.click()
+    click(reviewChanges)
     console.debug(`[Quick Approve v${SCRIPT_VERSION}] opened native review dialog`) 
 
     retry(() => {
       // Current GitHub.com uses a menu: choosing this item submits approval.
       const approveMenuItem = findButtonMatching(/^Approve changes(?:\s|$)/)
       if (approveMenuItem) {
-        approveMenuItem.click()
+        click(approveMenuItem)
         sessionStorage.removeItem(GITHUB_REVIEW_FLOW_KEY)
         console.debug(`[Quick Approve v${SCRIPT_VERSION}] chose native Approve changes`)
         return true
@@ -95,7 +112,7 @@ export const resumeGithubApproval = () => {
       )
       const approveButton = findButtonMatching(/^Approve(?:\s|$)/)
       if (!approve && !approveButton) return false
-      ;(approveButton ?? document.querySelector(`label[for="${approve.id}"]`) ?? approve).click()
+      click(approveButton ?? document.querySelector(`label[for="${approve.id}"]`) ?? approve)
 
       const dialog = (approve ?? approveButton).closest('[role="dialog"]') ?? document
       const submit = [...dialog.querySelectorAll('button')].find((button) =>
@@ -103,9 +120,15 @@ export const resumeGithubApproval = () => {
         button !== reviewChanges && !button.disabled
       )
       if (!submit) return false
-      submit.click()
-      sessionStorage.removeItem(GITHUB_REVIEW_FLOW_KEY)
-      console.debug(`[Quick Approve v${SCRIPT_VERSION}] submitted native GitHub review`)
+      click(submit)
+      // Remove pending state only after GitHub closes the native dialog, not
+      // immediately after a click that can still be rejected by the server.
+      retry(() => {
+        if (document.contains(dialog)) return false
+        sessionStorage.removeItem(GITHUB_REVIEW_FLOW_KEY)
+        console.debug(`[Quick Approve v${SCRIPT_VERSION}] submitted native GitHub review`)
+        return true
+      }, 40, () => reviewUiDebug('native review submission did not complete'))
       return true
     }, 40, () => reviewUiDebug('controls not found after 10 seconds'))
     return true
@@ -126,7 +149,7 @@ export const isPullRequestPage = (location = window.location) =>
   /^\/[^/]+\/[^/]+\/pull\/\d+/.test(location.pathname)
 
 // header container selector: github.com (Primer React) + GHES (classic)
-export const HEADER_ACTIONS_SELECTOR = '.gh-header-actions, [class*="PageHeader-Actions"]'
+export const HEADER_ACTIONS_SELECTOR = '.gh-header-actions, [class*="PageHeader-Actions"]:not(.d-none)'
 
 // Read the PR head commit from the rendered page. GHES keeps it in a hidden
 // `head_sha` input; GitHub.com may embed it in JSON as `headRefOid`.
@@ -177,6 +200,15 @@ export function waitForElement(selector, timeout = 5000) {
   })
 }
 
+// GitHub renders both conditions as page text on GitHub.com and GHES. This
+// deliberately blocks on any approval: Quick Approve is for an unreviewed PR.
+export const getApprovalBlockReason = () => {
+  const pageText = document.body.innerText || document.body.textContent || ''
+  if (/\bapproved (?:these |the )?changes\b/i.test(pageText)) return 'already approved'
+  if (/\b(?:has |with )?conflicts that must be resolved\b|\bmerge conflicts?\b/i.test(pageText)) return 'has merge conflicts'
+  return null
+}
+
 export const insertButton = () => {
   if (!isPullRequestPage()) return
 
@@ -192,6 +224,21 @@ export const insertButton = () => {
   button.classList.add('btn', 'btn-sm', 'btn-primary')
   button.innerText = 'Quick Approve ✅'
   button.setAttribute('style', 'margin-right: 4px')
+
+  const blockReason = getApprovalBlockReason()
+  const approvalPending = window.location.hostname === 'github.com' &&
+    sessionStorage.getItem(GITHUB_REVIEW_FLOW_KEY) === 'true'
+  if (blockReason || approvalPending) {
+    if (blockReason) {
+      button.disabled = true
+      button.innerText = `Cannot approve: ${blockReason}`
+      button.title = `Quick Approve is disabled: PR ${blockReason}.`
+    } else {
+      setApprovalInProgress(button)
+      button.title = 'Quick Approve is running.'
+    }
+    console.debug(`[Quick Approve v${SCRIPT_VERSION}] disabled`, { reason: blockReason ?? 'approval in progress' })
+  }
 
   button.addEventListener('click', async (e) => {
     e.preventDefault()
@@ -321,12 +368,16 @@ export const observeUrlChange = () => {
       return
     }
 
-    // A hot-reloaded extension can leave an old content-script listener on
-    // its button. Replace that stale DOM node with this generation's button.
+    // Re-evaluate page state when GitHub dynamically adds a review/conflict.
+    // A hot-reloaded extension can also leave an old listener on its button.
     const current = document.getElementById('quick-approve-btn')
-    if (current && current.dataset.quickApproveVersion !== SCRIPT_VERSION) {
-      console.debug(`[Quick Approve v${SCRIPT_VERSION}] replacing stale button`, {
+    const reason = getApprovalBlockReason()
+    const approvalPending = location.hostname === 'github.com' &&
+      sessionStorage.getItem(GITHUB_REVIEW_FLOW_KEY) === 'true'
+    if (current && (current.dataset.quickApproveVersion !== SCRIPT_VERSION || current.disabled !== (Boolean(reason) || approvalPending))) {
+      console.debug(`[Quick Approve v${SCRIPT_VERSION}] refreshing button`, {
         staleVersion: current.dataset.quickApproveVersion ?? 'unknown',
+        reason: reason ?? (approvalPending ? 'approval in progress' : null),
       })
       insertButton()
     }
