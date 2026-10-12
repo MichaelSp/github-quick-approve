@@ -4,7 +4,7 @@
 // @namespace   https://github.com/monodyle
 // @author      monodyle
 // @license     MIT
-// @version     3.7.9
+// @version     3.8.0
 // @description Quick Approve for Github PR
 // @match       https://github.com/*
 // @match       https://github.tools.sap/*
@@ -16,8 +16,9 @@
 
 // Shared core logic — used by index.js (extension) and GithubQuickApprove.user.js (userscript).
 
-const SCRIPT_VERSION = '3.7.7'
-const GITHUB_REVIEW_FLOW_KEY = 'quickApproveGithubReviewPending'
+const SCRIPT_VERSION = '3.8.0'
+const QUICK_APPROVE_PARAM = 'quick-approve'
+const QUICK_APPROVE_IFRAME_PARAM = 'quick-approve-iframe'
 
 const findButtonByText = (text) =>
   [...document.querySelectorAll('button')].find((button) => button.textContent.trim() === text)
@@ -80,8 +81,7 @@ const getReviewFormData = async ({ owner, repo, prNumber, origin }) => {
 // Works on both github.com and GHES (e.g. github.example.com)
 // GitHub.com has moved review submission behind its native React dialog.
 // Let that dialog submit the review instead of duplicating its private POST.
-const setApprovalInProgress = () => {
-  const button = document.getElementById('quick-approve-btn')
+const setApprovalInProgress = (button = document.getElementById('quick-approve-btn')) => {
   if (!button) return
   if (!document.getElementById('quick-approve-spinner-style')) {
     document.head.insertAdjacentHTML('beforeend', '<style id="quick-approve-spinner-style">@keyframes quick-approve-spin{to{transform:rotate(360deg)}}.quick-approve-spinner{display:inline-block;width:1em;height:1em;margin-left:.35em;vertical-align:-.18em;border:2px solid currentColor;border-right-color:transparent;border-radius:50%;animation:quick-approve-spin .65s linear infinite}</style>')
@@ -92,61 +92,171 @@ const setApprovalInProgress = () => {
 }
 
 const beginGithubApproval = ({ owner, repo, prNumber }) => {
-  sessionStorage.setItem(GITHUB_REVIEW_FLOW_KEY, 'true')
   setApprovalInProgress()
-  window.location.assign(`/${owner}/${repo}/pull/${prNumber}/changes`)
+  const iframeUrl = `/${owner}/${repo}/pull/${prNumber}/changes?${QUICK_APPROVE_PARAM}=1&${QUICK_APPROVE_IFRAME_PARAM}=1`
+  // Store the pending iframe URL so the pulls page can pick it up after navigation.
+  sessionStorage.setItem('quick-approve-pending-iframe', iframeUrl)
+  // Navigate the main window to the pulls list; approval runs in a side iframe
+  // overlay on the pulls page so the user sees the queue right away.
+  navigate(`${location.origin}/${owner}/${repo}/pulls`)
+}
+
+// Called on every page boot — picks up a pending iframe approval stored by
+// beginGithubApproval and injects the overlay on the new (pulls) page.
+const resumePendingIframeApproval = () => {
+  if (location.hostname !== 'github.com') return
+  const pending = sessionStorage.getItem('quick-approve-pending-iframe')
+  if (!pending) return
+  sessionStorage.removeItem('quick-approve-pending-iframe')
+  injectApprovalIframe(pending)
+}
+
+// Injects a compact fixed overlay iframe that runs the approval flow.
+// On success the iframe posts 'quick-approve-done'; on error it posts
+// 'quick-approve-error' and the listener below expands it to full screen.
+const injectApprovalIframe = (url) => {
+  const existing = document.getElementById('quick-approve-iframe')
+  if (existing) existing.remove()
+
+  const overlay = document.createElement('div')
+  overlay.id = 'quick-approve-iframe'
+  overlay.setAttribute('style', [
+    'position:fixed', 'bottom:16px', 'right:16px', 'z-index:99999',
+    'width:420px', 'height:340px',
+    'border:2px solid #2da44e', 'border-radius:8px',
+    'box-shadow:0 8px 24px rgba(0,0,0,.35)',
+    'overflow:hidden', 'transition:all .3s ease',
+    'background:#0d1117',
+  ].join(';'))
+
+  const label = document.createElement('div')
+  label.setAttribute('style', [
+    'position:absolute', 'top:0', 'left:0', 'right:0',
+    'padding:4px 10px', 'font-size:11px', 'color:#8b949e',
+    'background:#0d1117', 'border-bottom:1px solid #30363d',
+    'display:flex', 'align-items:center', 'justify-content:space-between',
+    'font-family:system-ui,sans-serif',
+  ].join(';'))
+  label.innerHTML = '<span>⚡ Quick Approve running…</span>'
+  const closeBtn = document.createElement('button')
+  closeBtn.textContent = '✕'
+  closeBtn.setAttribute('style', 'background:none;border:none;color:#8b949e;cursor:pointer;padding:0 2px;font-size:13px;line-height:1')
+  closeBtn.addEventListener('click', () => overlay.remove())
+  label.append(closeBtn)
+  overlay.append(label)
+
+  const iframe = document.createElement('iframe')
+  iframe.src = url
+  iframe.setAttribute('style', 'width:100%;height:100%;border:none;padding-top:26px;box-sizing:border-box')
+  iframe.setAttribute('sandbox', 'allow-scripts allow-same-origin allow-forms')
+  overlay.append(iframe)
+
+  document.body.append(overlay)
+
+  // Listen for completion messages from the iframe.
+  const handler = (e) => {
+    if (e.source !== iframe.contentWindow) return
+    if (e.data?.type === 'quick-approve-done') {
+      label.querySelector('span').textContent = '✅ Approved!'
+      label.querySelector('span').setAttribute('style', 'color:#2da44e')
+      setTimeout(() => overlay.remove(), 1500)
+      window.removeEventListener('message', handler)
+    } else if (e.data?.type === 'quick-approve-error') {
+      // Expand to fullscreen so the user can see what went wrong.
+      overlay.setAttribute('style', [
+        'position:fixed', 'top:0', 'left:0', 'right:0', 'bottom:0', 'z-index:99999',
+        'width:100vw', 'height:100vh',
+        'border:none', 'border-radius:0', 'box-shadow:none',
+        'overflow:hidden', 'background:#0d1117',
+      ].join(';'))
+      label.querySelector('span').textContent = '⚠️ Quick Approve failed — review manually'
+      label.querySelector('span').setAttribute('style', 'color:#f85149')
+      window.removeEventListener('message', handler)
+    }
+  }
+  window.addEventListener('message', handler)
 }
 
 const resumeGithubApproval = () => {
-  if (location.hostname !== 'github.com' || !sessionStorage.getItem(GITHUB_REVIEW_FLOW_KEY)) return
+  if (location.hostname !== 'github.com') return
   if (!/^\/[^/]+\/[^/]+\/pull\/\d+\/changes$/.test(location.pathname)) return
+  const params = new URLSearchParams(location.search)
+  if (params.get(QUICK_APPROVE_PARAM) !== '1') return
+
+  const pathParts = location.pathname.split('/')
+  const owner = pathParts[1]
+  const repo = pathParts[2]
+  const pullsUrl = `${location.origin}/${owner}/${repo}/pulls`
+  const inIframe = window !== window.top
+
+  // Strip the param immediately — self-cleaning regardless of what happens next.
+  params.delete(QUICK_APPROVE_PARAM)
+  params.delete(QUICK_APPROVE_IFRAME_PARAM)
+  const clean = location.pathname + (params.toString() ? '?' + params.toString() : '')
+  history.replaceState(null, '', clean)
+
+  const postToParent = (type) => {
+    if (inIframe) try { window.parent.postMessage({ type }, '*') } catch (_) {}
+  }
 
   retry(() => {
-    // GitHub currently calls this either "Review changes" or the split
-    // "Submit review Review" control on Files changed.
+    if (document.readyState !== 'complete') return false
     const reviewChanges = findButtonMatching(/^(Review changes|Submit review)/)
     if (!reviewChanges) return false
-    click(reviewChanges)
-    console.debug(`[Quick Approve v${SCRIPT_VERSION}] opened native review dialog`) 
+    setTimeout(() => {
+      if (location.hostname !== 'github.com' ||
+          !/^\/[^/]+\/[^/]+\/pull\/\d+\/changes$/.test(location.pathname)) return
+      const activeReviewChanges = findButtonMatching(/^(Review changes|Submit review)/)
+      if (!activeReviewChanges) return
+      // Programmatic click allows GitHub's React menu handler to run.
+      click(activeReviewChanges)
+      console.debug(`[Quick Approve v${SCRIPT_VERSION}] clicked native review control`)
 
-    retry(() => {
-      // Current GitHub.com uses a menu: choosing this item submits approval.
-      const approveMenuItem = findButtonMatching(/^Approve changes(?:\s|$)/)
-      if (approveMenuItem) {
-        click(approveMenuItem)
-        sessionStorage.removeItem(GITHUB_REVIEW_FLOW_KEY)
-        console.debug(`[Quick Approve v${SCRIPT_VERSION}] chose native Approve changes`)
-        return true
-      }
-
-      // Older GitHub UI presents a dialog with radios and a final submit.
-      const approve = document.querySelector(
-        'input[value="approve"], input[name="pull_request_review[event]"][value="approve"], [role="radio"][value="approve"]'
-      )
-      const approveButton = findButtonMatching(/^Approve(?:\s|$)/)
-      if (!approve && !approveButton) return false
-      click(approveButton ?? document.querySelector(`label[for="${approve.id}"]`) ?? approve)
-
-      const dialog = (approve ?? approveButton).closest('[role="dialog"]') ?? document
-      const submit = [...dialog.querySelectorAll('button')].find((button) =>
-        /^Submit review/.test(button.textContent.trim()) &&
-        button !== reviewChanges && !button.disabled
-      )
-      if (!submit) return false
-      click(submit)
-      // Remove pending state only after GitHub closes the native dialog, not
-      // immediately after a click that can still be rejected by the server.
       retry(() => {
-        if (document.contains(dialog)) return false
-        sessionStorage.removeItem(GITHUB_REVIEW_FLOW_KEY)
-        console.debug(`[Quick Approve v${SCRIPT_VERSION}] submitted native GitHub review`)
+        const approveMenuItem = findButtonMatching(/^Approve changes(?:\s|$)/)
+        if (approveMenuItem) {
+          click(approveMenuItem)
+          console.debug(`[Quick Approve v${SCRIPT_VERSION}] chose native Approve changes`)
+          return true
+        }
+
+        const approve = document.querySelector(
+          'input[value="approve"], input[name="pull_request_review[event]"][value="approve"], [role="radio"][value="approve"]'
+        )
+        const approveButton = findButtonMatching(/^Approve(?:\s|$)/)
+        if (!approve && !approveButton) return false
+
+        click(approveButton ?? document.querySelector(`label[for="${approve.id}"]`) ?? approve)
+        const dialog = (approve ?? approveButton).closest('[role="dialog"]') ?? document
+        const submit = [...dialog.querySelectorAll('button')].find((button) =>
+          /^Submit review/.test(button.textContent.trim()) &&
+          button !== activeReviewChanges && !button.disabled
+        )
+        if (!submit) return false
+        click(submit)
+        retry(() => {
+          if (document.contains(dialog)) return false
+          console.debug(`[Quick Approve v${SCRIPT_VERSION}] submitted native GitHub review`)
+          postToParent('quick-approve-done')
+          if (!inIframe) navigate(pullsUrl)
+          return true
+        }, 40, () => {
+          reviewUiDebug('native review submission did not complete')
+          postToParent('quick-approve-error')
+        })
         return true
-      }, 40, () => reviewUiDebug('native review submission did not complete'))
-      return true
-    }, 40, () => reviewUiDebug('controls not found after 10 seconds'))
+      }, 40, () => {
+        reviewUiDebug('controls not found after 10 seconds')
+        postToParent('quick-approve-error')
+      })
+    }, 250)
     return true
-  }, 40, () => reviewUiDebug('Review changes button not found after 10 seconds'))
+  }, 40, () => {
+    reviewUiDebug('Review changes button not found after 10 seconds')
+    postToParent('quick-approve-error')
+  })
 }
+
 
 const getApiBase = (location = window.location) => {
   const { hostname, origin } = location
@@ -240,7 +350,7 @@ const insertButton = () => {
 
   const blockReason = getApprovalBlockReason()
   const approvalPending = window.location.hostname === 'github.com' &&
-    sessionStorage.getItem(GITHUB_REVIEW_FLOW_KEY) === 'true'
+    new URLSearchParams(window.location.search).get(QUICK_APPROVE_PARAM) === '1'
   if (blockReason || approvalPending) {
     if (blockReason) {
       button.disabled = true
@@ -406,6 +516,7 @@ const observeUrlChange = () => {
   }
   insertWhenReady()
   resumeGithubApproval()
+  resumePendingIframeApproval()
   setupHotkey()
 }
 
