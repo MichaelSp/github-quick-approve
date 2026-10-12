@@ -4,7 +4,7 @@
 // @namespace   https://github.com/monodyle
 // @author      monodyle
 // @license     MIT
-// @version     3.9.0
+// @version     3.9.1
 // @description Quick Approve for Github PR
 // @match       https://github.com/*
 // @match       https://github.tools.sap/*
@@ -16,7 +16,7 @@
 
 // Shared core logic — used by index.js (extension) and GithubQuickApprove.user.js (userscript).
 
-const SCRIPT_VERSION = '3.9.0'
+const SCRIPT_VERSION = '3.9.1'
 
 
 const findButtonByText = (text) =>
@@ -76,48 +76,56 @@ const getReviewFormData = async ({ owner, repo, prNumber, origin }) => {
   console.debug(`[Quick Approve v${SCRIPT_VERSION}] authenticity token source: ${form ? 'review form' : 'PR page'}`)
   return { token, headSha: form?.querySelector('input[name="head_sha"]')?.value ?? null }
 }
-// Fetch-based approval: works on both github.com and GHES by POSTing to the
-// HTML reviews endpoint with the page CSRF token and head SHA.
-// github.com: token from <meta name="csrf-token">, headSha from page JSON.
-// GHES: token + headSha from the /files review form (scoped token required).
+// Fetch-based approval.
+// github.com: PUT to the Voltron page_data/submit_review endpoint (JSON, no extra token needed).
+// GHES: POST to the legacy HTML /reviews endpoint with the scoped authenticity token.
 const submitApprovalViaFetch = async ({ owner, repo, prNumber, origin }) => {
-  const isGithubCom = location.hostname === 'github.com'
+  if (location.hostname === 'github.com') {
+    const headSha = getHeadShaFromPage()
+    if (!headSha) throw new Error('head_sha not found')
 
-  let token, headSha
-  if (isGithubCom) {
-    // github.com exposes a valid CSRF token in the page meta tag and the
-    // head SHA in embedded JSON — no extra fetch needed.
-    token = getPageCsrfToken()
-    headSha = getHeadShaFromPage()
+    const res = await fetch(
+      `${origin}/${owner}/${repo}/pull/${prNumber}/page_data/submit_review`,
+      {
+        method: 'PUT',
+        credentials: 'include',
+        headers: {
+          'Content-Type': 'application/json',
+          'Accept': 'application/json',
+          'X-Requested-With': 'XMLHttpRequest',
+        },
+        body: JSON.stringify({ body: '', event: 'approve', headSha }),
+      }
+    )
+    if (!res.ok) {
+      const text = await res.text()
+      throw new Error(`HTTP ${res.status}: ${text || res.statusText}`)
+    }
   } else {
-    // GHES requires the review-form's scoped authenticity token.
-    const formData = await getReviewFormData({ owner, repo, prNumber, origin })
-    token = formData.token
-    headSha = formData.headSha || getHeadShaFromPage()
-  }
+    // GHES: scoped authenticity token + head_sha from the /files review form.
+    const { token, headSha: formSha } = await getReviewFormData({ owner, repo, prNumber, origin })
+    const headSha = formSha || getHeadShaFromPage()
+    if (!token) throw new Error('could not obtain CSRF token')
+    if (!headSha) throw new Error('head_sha not found')
 
-  if (!token) throw new Error('could not obtain CSRF token')
-  if (!headSha) throw new Error('head_sha not found')
-
-  const body = new URLSearchParams({
-    '_method': 'put',
-    'pull_request_review[event]': 'approve',
-    'head_sha': headSha,
-    'authenticity_token': token,
-  })
-
-  const res = await fetch(`${origin}/${owner}/${repo}/pull/${prNumber}/reviews`, {
-    method: 'POST',
-    credentials: 'include',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    body: body.toString(),
-  })
-
-  if (!res.ok) {
-    const text = await res.text()
-    throw new Error(`HTTP ${res.status}: ${text || res.statusText}`)
+    const res = await fetch(`${origin}/${owner}/${repo}/pull/${prNumber}/reviews`, {
+      method: 'POST',
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        '_method': 'put',
+        'pull_request_review[event]': 'approve',
+        'head_sha': headSha,
+        'authenticity_token': token,
+      }).toString(),
+    })
+    if (!res.ok) {
+      const text = await res.text()
+      throw new Error(`HTTP ${res.status}: ${text || res.statusText}`)
+    }
   }
 }
+
 
 // Overridable in tests — avoids real navigation and setTimeout races
 let navigate = (url) => setTimeout(() => { window.location.href = url }, 800)
