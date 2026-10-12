@@ -18,7 +18,7 @@
 
 const SCRIPT_VERSION = '3.8.0'
 const QUICK_APPROVE_PARAM = 'quick-approve'
-const QUICK_APPROVE_IFRAME_PARAM = 'quick-approve-iframe'
+
 
 const findButtonByText = (text) =>
   [...document.querySelectorAll('button')].find((button) => button.textContent.trim() === text)
@@ -93,89 +93,11 @@ const setApprovalInProgress = (button = document.getElementById('quick-approve-b
 
 const beginGithubApproval = ({ owner, repo, prNumber }) => {
   setApprovalInProgress()
-  const iframeUrl = `/${owner}/${repo}/pull/${prNumber}/changes?${QUICK_APPROVE_PARAM}=1&${QUICK_APPROVE_IFRAME_PARAM}=1`
-  // Store the pending iframe URL so the pulls page can pick it up after navigation.
-  sessionStorage.setItem('quick-approve-pending-iframe', iframeUrl)
-  // Navigate the main window to the pulls list; approval runs in a side iframe
-  // overlay on the pulls page so the user sees the queue right away.
-  navigate(`${location.origin}/${owner}/${repo}/pulls`)
+  // Navigate to the Files changed view; resumeGithubApproval() will drive the
+  // native review dialog and then navigate back to the pulls list on success.
+  window.location.assign(`/${owner}/${repo}/pull/${prNumber}/changes?${QUICK_APPROVE_PARAM}=1`)
 }
 
-// Called on every page boot — picks up a pending iframe approval stored by
-// beginGithubApproval and injects the overlay on the new (pulls) page.
-const resumePendingIframeApproval = () => {
-  if (location.hostname !== 'github.com') return
-  const pending = sessionStorage.getItem('quick-approve-pending-iframe')
-  if (!pending) return
-  sessionStorage.removeItem('quick-approve-pending-iframe')
-  injectApprovalIframe(pending)
-}
-
-// Injects a compact fixed overlay iframe that runs the approval flow.
-// On success the iframe posts 'quick-approve-done'; on error it posts
-// 'quick-approve-error' and the listener below expands it to full screen.
-const injectApprovalIframe = (url) => {
-  const existing = document.getElementById('quick-approve-iframe')
-  if (existing) existing.remove()
-
-  const overlay = document.createElement('div')
-  overlay.id = 'quick-approve-iframe'
-  overlay.setAttribute('style', [
-    'position:fixed', 'bottom:16px', 'right:16px', 'z-index:99999',
-    'width:420px', 'height:340px',
-    'border:2px solid #2da44e', 'border-radius:8px',
-    'box-shadow:0 8px 24px rgba(0,0,0,.35)',
-    'overflow:hidden', 'transition:all .3s ease',
-    'background:#0d1117',
-  ].join(';'))
-
-  const label = document.createElement('div')
-  label.setAttribute('style', [
-    'position:absolute', 'top:0', 'left:0', 'right:0',
-    'padding:4px 10px', 'font-size:11px', 'color:#8b949e',
-    'background:#0d1117', 'border-bottom:1px solid #30363d',
-    'display:flex', 'align-items:center', 'justify-content:space-between',
-    'font-family:system-ui,sans-serif',
-  ].join(';'))
-  label.innerHTML = '<span>⚡ Quick Approve running…</span>'
-  const closeBtn = document.createElement('button')
-  closeBtn.textContent = '✕'
-  closeBtn.setAttribute('style', 'background:none;border:none;color:#8b949e;cursor:pointer;padding:0 2px;font-size:13px;line-height:1')
-  closeBtn.addEventListener('click', () => overlay.remove())
-  label.append(closeBtn)
-  overlay.append(label)
-
-  const iframe = document.createElement('iframe')
-  iframe.src = url
-  iframe.setAttribute('style', 'width:100%;height:100%;border:none;padding-top:26px;box-sizing:border-box')
-  iframe.setAttribute('sandbox', 'allow-scripts allow-same-origin allow-forms')
-  overlay.append(iframe)
-
-  document.body.append(overlay)
-
-  // Listen for completion messages from the iframe.
-  const handler = (e) => {
-    if (e.source !== iframe.contentWindow) return
-    if (e.data?.type === 'quick-approve-done') {
-      label.querySelector('span').textContent = '✅ Approved!'
-      label.querySelector('span').setAttribute('style', 'color:#2da44e')
-      setTimeout(() => overlay.remove(), 1500)
-      window.removeEventListener('message', handler)
-    } else if (e.data?.type === 'quick-approve-error') {
-      // Expand to fullscreen so the user can see what went wrong.
-      overlay.setAttribute('style', [
-        'position:fixed', 'top:0', 'left:0', 'right:0', 'bottom:0', 'z-index:99999',
-        'width:100vw', 'height:100vh',
-        'border:none', 'border-radius:0', 'box-shadow:none',
-        'overflow:hidden', 'background:#0d1117',
-      ].join(';'))
-      label.querySelector('span').textContent = '⚠️ Quick Approve failed — review manually'
-      label.querySelector('span').setAttribute('style', 'color:#f85149')
-      window.removeEventListener('message', handler)
-    }
-  }
-  window.addEventListener('message', handler)
-}
 
 const resumeGithubApproval = () => {
   if (location.hostname !== 'github.com') return
@@ -187,17 +109,10 @@ const resumeGithubApproval = () => {
   const owner = pathParts[1]
   const repo = pathParts[2]
   const pullsUrl = `${location.origin}/${owner}/${repo}/pulls`
-  const inIframe = window !== window.top
 
-  // Strip the param immediately — self-cleaning regardless of what happens next.
   params.delete(QUICK_APPROVE_PARAM)
-  params.delete(QUICK_APPROVE_IFRAME_PARAM)
   const clean = location.pathname + (params.toString() ? '?' + params.toString() : '')
   history.replaceState(null, '', clean)
-
-  const postToParent = (type) => {
-    if (inIframe) try { window.parent.postMessage({ type }, '*') } catch (_) {}
-  }
 
   retry(() => {
     if (document.readyState !== 'complete') return false
@@ -237,24 +152,14 @@ const resumeGithubApproval = () => {
         retry(() => {
           if (document.contains(dialog)) return false
           console.debug(`[Quick Approve v${SCRIPT_VERSION}] submitted native GitHub review`)
-          postToParent('quick-approve-done')
-          if (!inIframe) navigate(pullsUrl)
+          navigate(pullsUrl)
           return true
-        }, 40, () => {
-          reviewUiDebug('native review submission did not complete')
-          postToParent('quick-approve-error')
-        })
+        }, 40, () => reviewUiDebug('native review submission did not complete'))
         return true
-      }, 40, () => {
-        reviewUiDebug('controls not found after 10 seconds')
-        postToParent('quick-approve-error')
-      })
+      }, 40, () => reviewUiDebug('controls not found after 10 seconds'))
     }, 250)
     return true
-  }, 40, () => {
-    reviewUiDebug('Review changes button not found after 10 seconds')
-    postToParent('quick-approve-error')
-  })
+  }, 40, () => reviewUiDebug('Review changes button not found after 10 seconds'))
 }
 
 
@@ -516,7 +421,6 @@ const observeUrlChange = () => {
   }
   insertWhenReady()
   resumeGithubApproval()
-  resumePendingIframeApproval()
   setupHotkey()
 }
 
