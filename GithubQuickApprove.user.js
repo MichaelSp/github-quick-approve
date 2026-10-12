@@ -4,7 +4,7 @@
 // @namespace   https://github.com/monodyle
 // @author      monodyle
 // @license     MIT
-// @version     3.8.0
+// @version     3.9.0
 // @description Quick Approve for Github PR
 // @match       https://github.com/*
 // @match       https://github.tools.sap/*
@@ -16,8 +16,7 @@
 
 // Shared core logic — used by index.js (extension) and GithubQuickApprove.user.js (userscript).
 
-const SCRIPT_VERSION = '3.8.0'
-const QUICK_APPROVE_PARAM = 'quick-approve'
+const SCRIPT_VERSION = '3.9.0'
 
 
 const findButtonByText = (text) =>
@@ -77,96 +76,47 @@ const getReviewFormData = async ({ owner, repo, prNumber, origin }) => {
   console.debug(`[Quick Approve v${SCRIPT_VERSION}] authenticity token source: ${form ? 'review form' : 'PR page'}`)
   return { token, headSha: form?.querySelector('input[name="head_sha"]')?.value ?? null }
 }
+// Fetch-based approval: works on both github.com and GHES by POSTing to the
+// HTML reviews endpoint with the page CSRF token and head SHA.
+// github.com: token from <meta name="csrf-token">, headSha from page JSON.
+// GHES: token + headSha from the /files review form (scoped token required).
+const submitApprovalViaFetch = async ({ owner, repo, prNumber, origin }) => {
+  const isGithubCom = location.hostname === 'github.com'
 
-// Works on both github.com and GHES (e.g. github.example.com)
-// GitHub.com has moved review submission behind its native React dialog.
-// Let that dialog submit the review instead of duplicating its private POST.
-const setApprovalInProgress = (button = document.getElementById('quick-approve-btn')) => {
-  if (!button) return
-  if (!document.getElementById('quick-approve-spinner-style')) {
-    document.head.insertAdjacentHTML('beforeend', '<style id="quick-approve-spinner-style">@keyframes quick-approve-spin{to{transform:rotate(360deg)}}.quick-approve-spinner{display:inline-block;width:1em;height:1em;margin-left:.35em;vertical-align:-.18em;border:2px solid currentColor;border-right-color:transparent;border-radius:50%;animation:quick-approve-spin .65s linear infinite}</style>')
+  let token, headSha
+  if (isGithubCom) {
+    // github.com exposes a valid CSRF token in the page meta tag and the
+    // head SHA in embedded JSON — no extra fetch needed.
+    token = getPageCsrfToken()
+    headSha = getHeadShaFromPage()
+  } else {
+    // GHES requires the review-form's scoped authenticity token.
+    const formData = await getReviewFormData({ owner, repo, prNumber, origin })
+    token = formData.token
+    headSha = formData.headSha || getHeadShaFromPage()
   }
-  button.disabled = true
-  button.innerHTML = 'Approving…<span class="quick-approve-spinner" aria-hidden="true"></span>'
-  button.setAttribute('aria-busy', 'true')
-}
 
-const beginGithubApproval = ({ owner, repo, prNumber }) => {
-  setApprovalInProgress()
-  // Navigate to the Files changed view; resumeGithubApproval() will drive the
-  // native review dialog and then navigate back to the pulls list on success.
-  window.location.assign(`/${owner}/${repo}/pull/${prNumber}/changes?${QUICK_APPROVE_PARAM}=1`)
-}
+  if (!token) throw new Error('could not obtain CSRF token')
+  if (!headSha) throw new Error('head_sha not found')
 
+  const body = new URLSearchParams({
+    '_method': 'put',
+    'pull_request_review[event]': 'approve',
+    'head_sha': headSha,
+    'authenticity_token': token,
+  })
 
-const resumeGithubApproval = () => {
-  if (location.hostname !== 'github.com') return
-  if (!/^\/[^/]+\/[^/]+\/pull\/\d+\/changes$/.test(location.pathname)) return
-  const params = new URLSearchParams(location.search)
-  if (params.get(QUICK_APPROVE_PARAM) !== '1') return
+  const res = await fetch(`${origin}/${owner}/${repo}/pull/${prNumber}/reviews`, {
+    method: 'POST',
+    credentials: 'include',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: body.toString(),
+  })
 
-  const pathParts = location.pathname.split('/')
-  const owner = pathParts[1]
-  const repo = pathParts[2]
-  const pullsUrl = `${location.origin}/${owner}/${repo}/pulls`
-
-  params.delete(QUICK_APPROVE_PARAM)
-  const clean = location.pathname + (params.toString() ? '?' + params.toString() : '')
-  history.replaceState(null, '', clean)
-
-  retry(() => {
-    if (document.readyState !== 'complete') return false
-    const reviewChanges = findButtonMatching(/^(Review changes|Submit review)/)
-    if (!reviewChanges) return false
-    setTimeout(() => {
-      if (location.hostname !== 'github.com' ||
-          !/^\/[^/]+\/[^/]+\/pull\/\d+\/changes$/.test(location.pathname)) return
-      const activeReviewChanges = findButtonMatching(/^(Review changes|Submit review)/)
-      if (!activeReviewChanges) return
-      // Programmatic click allows GitHub's React menu handler to run.
-      click(activeReviewChanges)
-      console.debug(`[Quick Approve v${SCRIPT_VERSION}] clicked native review control`)
-
-      retry(() => {
-        const approveMenuItem = findButtonMatching(/^Approve changes(?:\s|$)/)
-        if (approveMenuItem) {
-          click(approveMenuItem)
-          console.debug(`[Quick Approve v${SCRIPT_VERSION}] chose native Approve changes`)
-          return true
-        }
-
-        const approve = document.querySelector(
-          'input[value="approve"], input[name="pull_request_review[event]"][value="approve"], [role="radio"][value="approve"]'
-        )
-        const approveButton = findButtonMatching(/^Approve(?:\s|$)/)
-        if (!approve && !approveButton) return false
-
-        click(approveButton ?? document.querySelector(`label[for="${approve.id}"]`) ?? approve)
-        const dialog = (approve ?? approveButton).closest('[role="dialog"]') ?? document
-        const submit = [...dialog.querySelectorAll('button')].find((button) =>
-          /^Submit review/.test(button.textContent.trim()) &&
-          button !== activeReviewChanges && !button.disabled
-        )
-        if (!submit) return false
-        click(submit)
-        retry(() => {
-          if (document.contains(dialog)) return false
-          console.debug(`[Quick Approve v${SCRIPT_VERSION}] submitted native GitHub review`)
-          navigate(pullsUrl)
-          return true
-        }, 40, () => reviewUiDebug('native review submission did not complete'))
-        return true
-      }, 40, () => reviewUiDebug('controls not found after 10 seconds'))
-    }, 250)
-    return true
-  }, 40, () => reviewUiDebug('Review changes button not found after 10 seconds'))
-}
-
-
-const getApiBase = (location = window.location) => {
-  const { hostname, origin } = location
-  if (hostname === 'github.com') return 'https://api.github.com'
-  return `${origin}/api/v3`
+  if (!res.ok) {
+    const text = await res.text()
+    throw new Error(`HTTP ${res.status}: ${text || res.statusText}`)
+  }
 }
 
 // Overridable in tests — avoids real navigation and setTimeout races
@@ -254,105 +204,29 @@ const insertButton = () => {
   button.setAttribute('style', 'margin-right: 4px')
 
   const blockReason = getApprovalBlockReason()
-  const approvalPending = window.location.hostname === 'github.com' &&
-    new URLSearchParams(window.location.search).get(QUICK_APPROVE_PARAM) === '1'
-  if (blockReason || approvalPending) {
-    if (blockReason) {
-      button.disabled = true
-      button.innerText = `Cannot approve: ${blockReason}`
-      button.title = `Quick Approve is disabled: PR ${blockReason}.`
-    } else {
-      setApprovalInProgress()
-      button.title = 'Quick Approve is running.'
-    }
-    console.debug(`[Quick Approve v${SCRIPT_VERSION}] disabled`, { reason: blockReason ?? 'approval in progress' })
+  if (blockReason) {
+    button.disabled = true
+    button.innerText = `Cannot approve: ${blockReason}`
+    button.title = `Quick Approve is disabled: PR ${blockReason}.`
+    console.debug(`[Quick Approve v${SCRIPT_VERSION}] disabled`, { reason: blockReason })
   }
+
 
   button.addEventListener('click', async (e) => {
     e.preventDefault()
     console.debug(`[Quick Approve v${SCRIPT_VERSION}] click`, { url: location.href })
-    button.disabled = true
-    button.innerText = 'Approving…'
-
+    const origin = window.location.origin
     try {
-      if (window.location.hostname === 'github.com') {
-        beginGithubApproval({ owner, repo, prNumber })
-        return
-      }
-
-      const origin = window.location.origin
-
-      // GHES uses its legacy HTML /reviews endpoint. Prefer
-      // current-page data; `/files` is only a legacy GHES fallback.
-      const { token, headSha: formSha } = await getReviewFormData({ owner, repo, prNumber, origin })
-
-      // Prefer legacy form head_sha; else page payload; else REST API.
-      let head_sha = formSha || getHeadShaFromPage()
-      if (!head_sha && window.location.hostname === 'github.com') {
-        const apiBase = getApiBase()
-        console.warn('[Quick Approve] falling back to REST API', {
-          apiUrl: `${apiBase}/repos/${owner}/${repo}/pulls/${prNumber}`,
-        })
-
-        const prRes = await fetch(
-          `${apiBase}/repos/${owner}/${repo}/pulls/${prNumber}`,
-          {
-            headers: { Accept: 'application/vnd.github.v3+json' },
-            // Content scripts execute under moz-extension:// / chrome-extension://.
-            // Explicitly include the signed-in GitHub session for cross-origin API calls.
-            credentials: 'include',
-          }
-        )
-        if (!prRes.ok) {
-          const response = await prRes.text()
-          throw new Error(`API ${prRes.status}: ${prRes.statusText} ${response}`)
-        }
-        const pr = await prRes.json()
-        head_sha = pr.head?.sha
-      }
-      if (!head_sha) throw new Error('head_sha not found')
-      if (!token) throw new Error('could not obtain approval token from /files form')
-
-      const body = new URLSearchParams({
-        '_method': 'put',
-        'pull_request_review[event]': 'approve',
-        'head_sha': head_sha,
-        'authenticity_token': token,
-      })
-
-      const res = await fetch(
-        `${origin}/${owner}/${repo}/pull/${prNumber}/reviews`,
-        {
-          method: 'POST',
-          // Must run under the current GitHub session, not the extension origin.
-          credentials: 'include',
-          headers: {
-            'Content-Type': 'application/x-www-form-urlencoded',
-          },
-          body: body.toString(),
-        }
-      )
-
-      if (res.ok) {
-        button.innerText = '✓ Approved'
-        button.classList.remove('btn-primary')
-        button.classList.add('btn-success')
-        button.disabled = true
-        navigate(`${origin}/${owner}/${repo}/pulls`)
-      } else {
-        const response = await res.text()
-        const reason = response || res.statusText || 'No response body'
-        console.error(`[Quick Approve v${SCRIPT_VERSION}] review rejected`, {
-          status: res.status,
-          statusText: res.statusText,
-          response,
-        })
-        button.innerText = `✗ ${res.status}: ${reason}`
-        throw new Error(`HTTP ${res.status}: ${reason}`)
-      }
+      setApprovalInProgress(button)
+      await submitApprovalViaFetch({ owner, repo, prNumber, origin })
+      button.innerHTML = '✓ Approved'
+      button.classList.remove('btn-primary')
+      button.classList.add('btn-success')
+      button.disabled = true
+      navigate(`${origin}/${owner}/${repo}/pulls`)
     } catch (err) {
-      console.error('Quick Approve error:', err)
-      if (!button.innerText.startsWith('✗')) button.innerText = '✗ Failed'
+      console.error(`[Quick Approve v${SCRIPT_VERSION}] error`, err)
+      button.innerText = `✗ ${err.message.slice(0, 80)}`
       button.disabled = false
     }
   })
@@ -392,7 +266,6 @@ const observeUrlChange = () => {
     if (oldHref !== document.location.href) {
       oldHref = document.location.href
       insertButton()
-      resumeGithubApproval()
       return
     }
 
@@ -420,7 +293,6 @@ const observeUrlChange = () => {
     }
   }
   insertWhenReady()
-  resumeGithubApproval()
   setupHotkey()
 }
 
