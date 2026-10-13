@@ -4,7 +4,7 @@
 // @namespace   https://github.com/monodyle
 // @author      monodyle
 // @license     MIT
-// @version     3.9.6
+// @version     3.9.7
 // @description Quick Approve for Github PR
 // @match       https://github.com/*
 // @match       https://github.tools.sap/*
@@ -16,7 +16,7 @@
 
 // Shared core logic — used by index.js (extension) and GithubQuickApprove.user.js (userscript).
 
-const SCRIPT_VERSION = '3.9.6'
+const SCRIPT_VERSION = '3.9.7'
 
 
 const findButtonByText = (text) =>
@@ -112,6 +112,12 @@ const resumeChangesPageApproval = async () => {
   if (!raw) return
   sessionStorage.removeItem(CHANGES_PENDING_KEY)
 
+  // Wait for the page to finish loading so the fetch-nonce meta tag is available.
+  await new Promise((resolve) => {
+    if (document.readyState === 'complete') return resolve()
+    window.addEventListener('load', resolve, { once: true })
+  })
+
   let pending
   try { pending = JSON.parse(raw) } catch { return }
   const { owner, repo, prNumber, origin, headSha, pullsUrl } = pending
@@ -139,7 +145,7 @@ const resumeChangesPageApproval = async () => {
     navigate(pullsUrl)
   } else {
     const text = await res.text()
-    console.error(`[Quick Approve v${SCRIPT_VERSION}] submit_review failed`, { status: res.status })
+    console.error(`[Quick Approve v${SCRIPT_VERSION}] submit_review failed`, { status: res.status, body: text.slice(0, 400), headSha, fetchNonce: fetchNonce.slice(0, 20) })
     // Leave the user on /changes so they can approve manually.
     const btn = document.getElementById('quick-approve-btn')
     if (btn) { btn.innerText = `✗ HTTP ${res.status}`; btn.disabled = false }
