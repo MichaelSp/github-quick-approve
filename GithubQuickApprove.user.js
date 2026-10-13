@@ -4,7 +4,7 @@
 // @namespace   https://github.com/monodyle
 // @author      monodyle
 // @license     MIT
-// @version     3.10.0
+// @version     3.10.1
 // @description Quick Approve for Github PR
 // @match       https://github.com/*
 // @match       https://github.tools.sap/*
@@ -16,7 +16,7 @@
 
 // Shared core logic — used by index.js (extension) and GithubQuickApprove.user.js (userscript).
 
-const SCRIPT_VERSION = '3.10.0'
+const SCRIPT_VERSION = '3.10.1'
 
 
 const findButtonByText = (text) =>
@@ -322,12 +322,12 @@ const insertButton = () => {
     }
   })
 
-  waitForElement(HEADER_ACTIONS_SELECTOR)
-    .then((container) => {
-      if (document.getElementById('quick-approve-btn')) return
-      container.prepend(button)
-    })
-    .catch(() => console.warn('Github Quick Approve: could not find header actions container'))
+  const container = document.querySelector(HEADER_ACTIONS_SELECTOR)
+  if (container) {
+    container.prepend(button)
+  }
+  // If container isn't rendered yet, the MutationObserver in observeUrlChange
+  // will call insertButton() again once React renders it.
 }
 
 // Ctrl+A on a PR page triggers the Quick Approve button
@@ -361,34 +361,26 @@ const observeUrlChange = () => {
       return
     }
 
-    // Re-evaluate page state when GitHub dynamically adds a review/conflict.
-    // A hot-reloaded extension can also leave an old listener on its button.
+    // Insert button if it's missing (container may have just rendered) or stale.
     const current = document.getElementById('quick-approve-btn')
-    const reason = getApprovalBlockReason()
-    // Only refresh if the version is stale. Don't re-insert just because
-    // disabled state changed — that causes an infinite MutationObserver loop
-    // (insertButton mutates DOM → observer fires → insertButton → ...).
-    if (current && current.dataset.quickApproveVersion !== SCRIPT_VERSION) {
-      console.debug(`[Quick Approve v${SCRIPT_VERSION}] refreshing button`, {
-        staleVersion: current.dataset.quickApproveVersion ?? 'unknown',
-        reason,
-      })
+    const container = document.querySelector(HEADER_ACTIONS_SELECTOR)
+    if (container && !current) {
+      insertButton()
+    } else if (current && current.dataset.quickApproveVersion !== SCRIPT_VERSION) {
+      console.debug(`[Quick Approve v${SCRIPT_VERSION}] refreshing button (stale version)`)
       insertButton()
     }
   })
   observer.observe(document.body, { childList: true, subtree: true })
 
-  // React may replace the header after userscript injection. Retry briefly,
-  // then stop; the navigation observer handles later page changes.
+  // Attempt initial insert; retry if container not rendered yet.
+  // MutationObserver also handles late-rendering containers.
   let attempts = 0
   const insertWhenReady = () => {
-    // If the header container already exists, insertButton's async waitForElement
-    // will resolve immediately and insert the button — no need to retry.
-    if (document.querySelector(HEADER_ACTIONS_SELECTOR)) {
-      insertButton()
-      return
+    insertButton()
+    if (!document.getElementById('quick-approve-btn') && ++attempts < 20) {
+      setTimeout(insertWhenReady, 250)
     }
-    if (++attempts < 20) setTimeout(insertWhenReady, 250)
   }
   insertWhenReady()
   checkApprovedRedirect()
