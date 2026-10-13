@@ -4,7 +4,7 @@
 // @namespace   https://github.com/monodyle
 // @author      monodyle
 // @license     MIT
-// @version     3.9.2
+// @version     3.9.3
 // @description Quick Approve for Github PR
 // @match       https://github.com/*
 // @match       https://github.tools.sap/*
@@ -16,7 +16,7 @@
 
 // Shared core logic — used by index.js (extension) and GithubQuickApprove.user.js (userscript).
 
-const SCRIPT_VERSION = '3.9.2'
+const SCRIPT_VERSION = '3.9.3'
 
 
 const findButtonByText = (text) =>
@@ -95,6 +95,7 @@ const submitApprovalViaFetch = async ({ owner, repo, prNumber, origin }) => {
     const headSha = getHeadShaFromPage()
     if (!headSha) throw new Error('head_sha not found')
 
+    const fetchNonce = document.querySelector('meta[name="fetch-nonce"]')?.getAttribute('content') ?? ''
     const res = await fetch(
       `${origin}/${owner}/${repo}/pull/${prNumber}/page_data/submit_review`,
       {
@@ -104,6 +105,8 @@ const submitApprovalViaFetch = async ({ owner, repo, prNumber, origin }) => {
           'Content-Type': 'application/json',
           'Accept': 'application/json',
           'X-Requested-With': 'XMLHttpRequest',
+          'GitHub-Verified-Fetch': 'true',
+          'X-Fetch-Nonce': fetchNonce,
         },
         body: JSON.stringify({ body: '', event: 'approve', headSha }),
       }
