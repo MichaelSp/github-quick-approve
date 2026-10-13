@@ -4,7 +4,7 @@
 // @namespace   https://github.com/monodyle
 // @author      monodyle
 // @license     MIT
-// @version     3.9.8
+// @version     3.9.9
 // @description Quick Approve for Github PR
 // @match       https://github.com/*
 // @match       https://github.tools.sap/*
@@ -16,7 +16,7 @@
 
 // Shared core logic — used by index.js (extension) and GithubQuickApprove.user.js (userscript).
 
-const SCRIPT_VERSION = '3.9.8'
+const SCRIPT_VERSION = '3.9.9'
 
 
 const findButtonByText = (text) =>
@@ -91,6 +91,7 @@ const setApprovalInProgress = (button = document.getElementById('quick-approve-b
 // which the browser sets automatically — we cannot spoof it from another tab.
 // Store the approval intent in sessionStorage and fire the PUT from /changes.
 const CHANGES_PENDING_KEY = 'quick-approve-pending'
+const APPROVED_REDIRECT_KEY = 'quick-approve-redirect'
 
 const beginChangesApproval = ({ owner, repo, prNumber, origin }) => {
   sessionStorage.setItem(CHANGES_PENDING_KEY, JSON.stringify({
@@ -134,10 +135,11 @@ const resumeChangesPageApproval = () => {
         // Current GitHub.com: single "Approve changes" menu item.
         const approveMenuItem = findButtonMatching(/^Approve changes(?:\s|$)/)
         if (approveMenuItem) {
+          // GitHub navigates the page after this click (loses our timers).
+          // Store the redirect target first so observeUrlChange can pick it up.
+          sessionStorage.setItem(APPROVED_REDIRECT_KEY, pullsUrl)
           click(approveMenuItem)
           console.debug(`[Quick Approve v${SCRIPT_VERSION}] chose Approve changes`)
-          // Menu item submission is self-contained; navigate after a short settle.
-          setTimeout(() => navigate(pullsUrl), 1500)
           return true
         }
 
@@ -158,6 +160,7 @@ const resumeChangesPageApproval = () => {
         retry(() => {
           if (document.contains(dialog)) return false
           console.debug(`[Quick Approve v${SCRIPT_VERSION}] review submitted`)
+          sessionStorage.setItem(APPROVED_REDIRECT_KEY, pullsUrl)
           navigate(pullsUrl)
           return true
         }, 40, () => fail('dialog did not close after submission'))
@@ -167,6 +170,15 @@ const resumeChangesPageApproval = () => {
     return true
   }, 40, () => fail('review button not found after 10s'))
 }
+// After GitHub navigates away from /changes on approval, consume the redirect
+// key and send the user to the pulls list.
+const checkApprovedRedirect = () => {
+  const pullsUrl = sessionStorage.getItem(APPROVED_REDIRECT_KEY)
+  if (!pullsUrl) return
+  sessionStorage.removeItem(APPROVED_REDIRECT_KEY)
+  navigate(pullsUrl)
+}
+
 
 
 // GHES: POST to the legacy HTML /reviews endpoint with the scoped authenticity token.
@@ -345,6 +357,7 @@ const observeUrlChange = () => {
   const observer = new MutationObserver(() => {
     if (oldHref !== document.location.href) {
       oldHref = document.location.href
+      checkApprovedRedirect()
       insertButton()
       return
     }
@@ -353,7 +366,10 @@ const observeUrlChange = () => {
     // A hot-reloaded extension can also leave an old listener on its button.
     const current = document.getElementById('quick-approve-btn')
     const reason = getApprovalBlockReason()
-    if (current && (current.dataset.quickApproveVersion !== SCRIPT_VERSION || current.disabled !== Boolean(reason))) {
+    // Only refresh if the version is stale. Don't re-insert just because
+    // disabled state changed — that causes an infinite MutationObserver loop
+    // (insertButton mutates DOM → observer fires → insertButton → ...).
+    if (current && current.dataset.quickApproveVersion !== SCRIPT_VERSION) {
       console.debug(`[Quick Approve v${SCRIPT_VERSION}] refreshing button`, {
         staleVersion: current.dataset.quickApproveVersion ?? 'unknown',
         reason,
@@ -373,6 +389,7 @@ const observeUrlChange = () => {
     }
   }
   insertWhenReady()
+  checkApprovedRedirect()
   resumeChangesPageApproval()
   setupHotkey()
 }
