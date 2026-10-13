@@ -4,7 +4,7 @@
 // @namespace   https://github.com/monodyle
 // @author      monodyle
 // @license     MIT
-// @version     3.9.7
+// @version     3.9.8
 // @description Quick Approve for Github PR
 // @match       https://github.com/*
 // @match       https://github.tools.sap/*
@@ -16,7 +16,7 @@
 
 // Shared core logic — used by index.js (extension) and GithubQuickApprove.user.js (userscript).
 
-const SCRIPT_VERSION = '3.9.7'
+const SCRIPT_VERSION = '3.9.8'
 
 
 const findButtonByText = (text) =>
@@ -93,64 +93,81 @@ const setApprovalInProgress = (button = document.getElementById('quick-approve-b
 const CHANGES_PENDING_KEY = 'quick-approve-pending'
 
 const beginChangesApproval = ({ owner, repo, prNumber, origin }) => {
-  const headSha = getHeadShaFromPage()
-  if (!headSha) throw new Error('head_sha not found')
   sessionStorage.setItem(CHANGES_PENDING_KEY, JSON.stringify({
-    owner, repo, prNumber, origin,
-    headSha,
     pullsUrl: `${origin}/${owner}/${repo}/pulls`,
   }))
   window.location.assign(`/${owner}/${repo}/pull/${prNumber}/changes`)
 }
 
-// Called on /changes page load — fires the PUT immediately (Referer is now correct)
-// then navigates to the pulls list.
-const resumeChangesPageApproval = async () => {
+// Called on /changes page load — drives the native review dialog automatically,
+// then navigates to the pulls list on success.
+const resumeChangesPageApproval = () => {
   if (location.hostname !== 'github.com') return
   if (!/^\/[^/]+\/[^/]+\/pull\/\d+\/changes$/.test(location.pathname)) return
   const raw = sessionStorage.getItem(CHANGES_PENDING_KEY)
   if (!raw) return
   sessionStorage.removeItem(CHANGES_PENDING_KEY)
 
-  // Wait for the page to finish loading so the fetch-nonce meta tag is available.
-  await new Promise((resolve) => {
-    if (document.readyState === 'complete') return resolve()
-    window.addEventListener('load', resolve, { once: true })
-  })
-
   let pending
   try { pending = JSON.parse(raw) } catch { return }
-  const { owner, repo, prNumber, origin, headSha, pullsUrl } = pending
+  const { pullsUrl } = pending
 
-  const fetchNonce = document.querySelector('meta[name="fetch-nonce"]')?.getAttribute('content') ?? ''
-  const res = await fetch(
-    `${origin}/${owner}/${repo}/pull/${prNumber}/page_data/submit_review`,
-    {
-      method: 'PUT',
-      credentials: 'include',
-      headers: {
-        'Content-Type': 'application/json',
-        'Accept': 'application/json',
-        'X-Requested-With': 'XMLHttpRequest',
-        'GitHub-Verified-Fetch': 'true',
-        'GitHub-Is-React': 'true',
-        'X-Fetch-Nonce': fetchNonce,
-      },
-      body: JSON.stringify({ body: '', event: 'approve', headSha }),
-    }
-  )
-
-  if (res.ok) {
-    console.debug(`[Quick Approve v${SCRIPT_VERSION}] approved via /changes, navigating to pulls`)
-    navigate(pullsUrl)
-  } else {
-    const text = await res.text()
-    console.error(`[Quick Approve v${SCRIPT_VERSION}] submit_review failed`, { status: res.status, body: text.slice(0, 400), headSha, fetchNonce: fetchNonce.slice(0, 20) })
-    // Leave the user on /changes so they can approve manually.
-    const btn = document.getElementById('quick-approve-btn')
-    if (btn) { btn.innerText = `✗ HTTP ${res.status}`; btn.disabled = false }
+  const fail = (reason) => {
+    console.error(`[Quick Approve v${SCRIPT_VERSION}] resumeChangesPageApproval failed: ${reason}`)
+    // User is already on /changes and can approve manually.
   }
+
+  // Wait for the page to fully render before looking for buttons.
+  retry(() => {
+    if (document.readyState !== 'complete') return false
+    const reviewBtn = findButtonMatching(/^(Review changes|Submit review)/)
+    if (!reviewBtn) return false
+
+    // Brief delay so React has finished hydrating the button's click handlers.
+    setTimeout(() => {
+      const activeReviewBtn = findButtonMatching(/^(Review changes|Submit review)/)
+      if (!activeReviewBtn) return fail('review button gone after delay')
+      click(activeReviewBtn)
+      console.debug(`[Quick Approve v${SCRIPT_VERSION}] clicked review button`)
+
+      retry(() => {
+        // Current GitHub.com: single "Approve changes" menu item.
+        const approveMenuItem = findButtonMatching(/^Approve changes(?:\s|$)/)
+        if (approveMenuItem) {
+          click(approveMenuItem)
+          console.debug(`[Quick Approve v${SCRIPT_VERSION}] chose Approve changes`)
+          // Menu item submission is self-contained; navigate after a short settle.
+          setTimeout(() => navigate(pullsUrl), 1500)
+          return true
+        }
+
+        // Older dialog: radio + Submit review button.
+        const approve = document.querySelector(
+          'input[value="approve"], input[name="pull_request_review[event]"][value="approve"], [role="radio"][value="approve"]'
+        )
+        const approveButton = findButtonMatching(/^Approve(?:\s|$)/)
+        if (!approve && !approveButton) return false
+
+        click(approveButton ?? document.querySelector(`label[for="${approve.id}"]`) ?? approve)
+        const dialog = (approve ?? approveButton).closest('[role="dialog"]') ?? document
+        const submit = [...dialog.querySelectorAll('button')].find(
+          (b) => /^Submit review/.test(b.textContent.trim()) && b !== activeReviewBtn && !b.disabled
+        )
+        if (!submit) return false
+        click(submit)
+        retry(() => {
+          if (document.contains(dialog)) return false
+          console.debug(`[Quick Approve v${SCRIPT_VERSION}] review submitted`)
+          navigate(pullsUrl)
+          return true
+        }, 40, () => fail('dialog did not close after submission'))
+        return true
+      }, 40, () => fail('approve controls not found after 10s'))
+    }, 250)
+    return true
+  }, 40, () => fail('review button not found after 10s'))
 }
+
 
 // GHES: POST to the legacy HTML /reviews endpoint with the scoped authenticity token.
 const submitApprovalViaFetch = async ({ owner, repo, prNumber, origin }) => {
@@ -356,7 +373,7 @@ const observeUrlChange = () => {
     }
   }
   insertWhenReady()
-  void resumeChangesPageApproval().catch((err) => console.error(`[Quick Approve v${SCRIPT_VERSION}] resumeChangesPageApproval error`, err))
+  resumeChangesPageApproval()
   setupHotkey()
 }
 
