@@ -4,7 +4,7 @@
 // @namespace   https://github.com/monodyle
 // @author      monodyle
 // @license     MIT
-// @version     3.9.3
+// @version     3.9.4
 // @description Quick Approve for Github PR
 // @match       https://github.com/*
 // @match       https://github.tools.sap/*
@@ -16,7 +16,7 @@
 
 // Shared core logic — used by index.js (extension) and GithubQuickApprove.user.js (userscript).
 
-const SCRIPT_VERSION = '3.9.3'
+const SCRIPT_VERSION = '3.9.4'
 
 
 const findButtonByText = (text) =>
@@ -96,11 +96,15 @@ const submitApprovalViaFetch = async ({ owner, repo, prNumber, origin }) => {
     if (!headSha) throw new Error('head_sha not found')
 
     const fetchNonce = document.querySelector('meta[name="fetch-nonce"]')?.getAttribute('content') ?? ''
+    // page_data/submit_review requires GitHub-Verified-Fetch + X-Fetch-Nonce.
+    // The endpoint also validates the Referer; suppress it with no-referrer so
+    // the check cannot distinguish which PR sub-page we're on.
     const res = await fetch(
       `${origin}/${owner}/${repo}/pull/${prNumber}/page_data/submit_review`,
       {
         method: 'PUT',
         credentials: 'include',
+        referrerPolicy: 'no-referrer',
         headers: {
           'Content-Type': 'application/json',
           'Accept': 'application/json',
