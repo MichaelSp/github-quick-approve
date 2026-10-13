@@ -4,7 +4,7 @@
 // @namespace   https://github.com/monodyle
 // @author      monodyle
 // @license     MIT
-// @version     3.9.1
+// @version     3.9.2
 // @description Quick Approve for Github PR
 // @match       https://github.com/*
 // @match       https://github.tools.sap/*
@@ -16,7 +16,7 @@
 
 // Shared core logic — used by index.js (extension) and GithubQuickApprove.user.js (userscript).
 
-const SCRIPT_VERSION = '3.9.1'
+const SCRIPT_VERSION = '3.9.2'
 
 
 const findButtonByText = (text) =>
@@ -76,6 +76,17 @@ const getReviewFormData = async ({ owner, repo, prNumber, origin }) => {
   console.debug(`[Quick Approve v${SCRIPT_VERSION}] authenticity token source: ${form ? 'review form' : 'PR page'}`)
   return { token, headSha: form?.querySelector('input[name="head_sha"]')?.value ?? null }
 }
+
+const setApprovalInProgress = (button = document.getElementById('quick-approve-btn')) => {
+  if (!button) return
+  if (!document.getElementById('quick-approve-spinner-style')) {
+    document.head.insertAdjacentHTML('beforeend', '<style id="quick-approve-spinner-style">@keyframes quick-approve-spin{to{transform:rotate(360deg)}}.quick-approve-spinner{display:inline-block;width:1em;height:1em;margin-left:.35em;vertical-align:-.18em;border:2px solid currentColor;border-right-color:transparent;border-radius:50%;animation:quick-approve-spin .65s linear infinite}</style>')
+  }
+  button.disabled = true
+  button.innerHTML = 'Approving…<span class="quick-approve-spinner" aria-hidden="true"></span>'
+  button.setAttribute('aria-busy', 'true')
+}
+
 // Fetch-based approval.
 // github.com: PUT to the Voltron page_data/submit_review endpoint (JSON, no extra token needed).
 // GHES: POST to the legacy HTML /reviews endpoint with the scoped authenticity token.
