@@ -4,7 +4,7 @@
 // @namespace   https://github.com/monodyle
 // @author      monodyle
 // @license     MIT
-// @version     3.9.9
+// @version     3.10.0
 // @description Quick Approve for Github PR
 // @match       https://github.com/*
 // @match       https://github.tools.sap/*
@@ -16,7 +16,7 @@
 
 // Shared core logic — used by index.js (extension) and GithubQuickApprove.user.js (userscript).
 
-const SCRIPT_VERSION = '3.9.9'
+const SCRIPT_VERSION = '3.10.0'
 
 
 const findButtonByText = (text) =>
@@ -295,7 +295,6 @@ const insertButton = () => {
     button.disabled = true
     button.innerText = `Cannot approve: ${blockReason}`
     button.title = `Quick Approve is disabled: PR ${blockReason}.`
-    console.debug(`[Quick Approve v${SCRIPT_VERSION}] disabled`, { reason: blockReason })
   }
 
 
@@ -383,10 +382,13 @@ const observeUrlChange = () => {
   // then stop; the navigation observer handles later page changes.
   let attempts = 0
   const insertWhenReady = () => {
-    insertButton()
-    if (!document.getElementById('quick-approve-btn') && ++attempts < 20) {
-      setTimeout(insertWhenReady, 250)
+    // If the header container already exists, insertButton's async waitForElement
+    // will resolve immediately and insert the button — no need to retry.
+    if (document.querySelector(HEADER_ACTIONS_SELECTOR)) {
+      insertButton()
+      return
     }
+    if (++attempts < 20) setTimeout(insertWhenReady, 250)
   }
   insertWhenReady()
   checkApprovedRedirect()
