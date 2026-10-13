@@ -4,7 +4,7 @@
 // @namespace   https://github.com/monodyle
 // @author      monodyle
 // @license     MIT
-// @version     3.10.1
+// @version     3.10.2
 // @description Quick Approve for Github PR
 // @match       https://github.com/*
 // @match       https://github.tools.sap/*
@@ -16,7 +16,7 @@
 
 // Shared core logic — used by index.js (extension) and GithubQuickApprove.user.js (userscript).
 
-const SCRIPT_VERSION = '3.10.1'
+const SCRIPT_VERSION = '3.10.2'
 
 
 const findButtonByText = (text) =>
@@ -171,12 +171,13 @@ const resumeChangesPageApproval = () => {
   }, 40, () => fail('review button not found after 10s'))
 }
 // After GitHub navigates away from /changes on approval, consume the redirect
-// key and send the user to the pulls list.
+// key and send the user to the pulls list immediately (no delay — the timer
+// from navigate() would be lost when GitHub does its own page transition).
 const checkApprovedRedirect = () => {
   const pullsUrl = sessionStorage.getItem(APPROVED_REDIRECT_KEY)
   if (!pullsUrl) return
   sessionStorage.removeItem(APPROVED_REDIRECT_KEY)
-  navigate(pullsUrl)
+  window.location.replace(pullsUrl)
 }
 
 
