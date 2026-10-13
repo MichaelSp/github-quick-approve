@@ -4,7 +4,7 @@
 // @namespace   https://github.com/monodyle
 // @author      monodyle
 // @license     MIT
-// @version     3.9.5
+// @version     3.9.6
 // @description Quick Approve for Github PR
 // @match       https://github.com/*
 // @match       https://github.tools.sap/*
@@ -16,7 +16,7 @@
 
 // Shared core logic — used by index.js (extension) and GithubQuickApprove.user.js (userscript).
 
-const SCRIPT_VERSION = '3.9.5'
+const SCRIPT_VERSION = '3.9.6'
 
 
 const findButtonByText = (text) =>
@@ -87,61 +87,86 @@ const setApprovalInProgress = (button = document.getElementById('quick-approve-b
   button.setAttribute('aria-busy', 'true')
 }
 
-// Fetch-based approval.
-// github.com: PUT to the Voltron page_data/submit_review endpoint (JSON, no extra token needed).
+// github.com: the page_data/submit_review endpoint validates Referer = /changes,
+// which the browser sets automatically — we cannot spoof it from another tab.
+// Store the approval intent in sessionStorage and fire the PUT from /changes.
+const CHANGES_PENDING_KEY = 'quick-approve-pending'
+
+const beginChangesApproval = ({ owner, repo, prNumber, origin }) => {
+  const headSha = getHeadShaFromPage()
+  if (!headSha) throw new Error('head_sha not found')
+  sessionStorage.setItem(CHANGES_PENDING_KEY, JSON.stringify({
+    owner, repo, prNumber, origin,
+    headSha,
+    pullsUrl: `${origin}/${owner}/${repo}/pulls`,
+  }))
+  window.location.assign(`/${owner}/${repo}/pull/${prNumber}/changes`)
+}
+
+// Called on /changes page load — fires the PUT immediately (Referer is now correct)
+// then navigates to the pulls list.
+const resumeChangesPageApproval = async () => {
+  if (location.hostname !== 'github.com') return
+  if (!/^\/[^/]+\/[^/]+\/pull\/\d+\/changes$/.test(location.pathname)) return
+  const raw = sessionStorage.getItem(CHANGES_PENDING_KEY)
+  if (!raw) return
+  sessionStorage.removeItem(CHANGES_PENDING_KEY)
+
+  let pending
+  try { pending = JSON.parse(raw) } catch { return }
+  const { owner, repo, prNumber, origin, headSha, pullsUrl } = pending
+
+  const fetchNonce = document.querySelector('meta[name="fetch-nonce"]')?.getAttribute('content') ?? ''
+  const res = await fetch(
+    `${origin}/${owner}/${repo}/pull/${prNumber}/page_data/submit_review`,
+    {
+      method: 'PUT',
+      credentials: 'include',
+      headers: {
+        'Content-Type': 'application/json',
+        'Accept': 'application/json',
+        'X-Requested-With': 'XMLHttpRequest',
+        'GitHub-Verified-Fetch': 'true',
+        'GitHub-Is-React': 'true',
+        'X-Fetch-Nonce': fetchNonce,
+      },
+      body: JSON.stringify({ body: '', event: 'approve', headSha }),
+    }
+  )
+
+  if (res.ok) {
+    console.debug(`[Quick Approve v${SCRIPT_VERSION}] approved via /changes, navigating to pulls`)
+    navigate(pullsUrl)
+  } else {
+    const text = await res.text()
+    console.error(`[Quick Approve v${SCRIPT_VERSION}] submit_review failed`, { status: res.status })
+    // Leave the user on /changes so they can approve manually.
+    const btn = document.getElementById('quick-approve-btn')
+    if (btn) { btn.innerText = `✗ HTTP ${res.status}`; btn.disabled = false }
+  }
+}
+
 // GHES: POST to the legacy HTML /reviews endpoint with the scoped authenticity token.
 const submitApprovalViaFetch = async ({ owner, repo, prNumber, origin }) => {
-  if (location.hostname === 'github.com') {
-    const headSha = getHeadShaFromPage()
-    if (!headSha) throw new Error('head_sha not found')
+  const { token, headSha: formSha } = await getReviewFormData({ owner, repo, prNumber, origin })
+  const headSha = formSha || getHeadShaFromPage()
+  if (!token) throw new Error('could not obtain CSRF token')
+  if (!headSha) throw new Error('head_sha not found')
 
-    const fetchNonce = document.querySelector('meta[name="fetch-nonce"]')?.getAttribute('content') ?? ''
-    const clientVersion = document.querySelector('meta[name="github-client-version"]')?.getAttribute('content') ?? ''
-    const res = await fetch(
-      `${origin}/${owner}/${repo}/pull/${prNumber}/page_data/submit_review`,
-      {
-        method: 'PUT',
-        credentials: 'include',
-        // Spoof the Referer as the /changes tab — the endpoint validates it.
-        referrer: `${origin}/${owner}/${repo}/pull/${prNumber}/changes`,
-        headers: {
-          'Content-Type': 'application/json',
-          'Accept': 'application/json',
-          'X-Requested-With': 'XMLHttpRequest',
-          'GitHub-Verified-Fetch': 'true',
-          'GitHub-Is-React': 'true',
-          'X-Fetch-Nonce': fetchNonce,
-          ...(clientVersion && { 'X-GitHub-Client-Version': clientVersion }),
-        },
-        body: JSON.stringify({ body: '', event: 'approve', headSha }),
-      }
-    )
-    if (!res.ok) {
-      const text = await res.text()
-      throw new Error(`HTTP ${res.status}: ${text || res.statusText}`)
-    }
-  } else {
-    // GHES: scoped authenticity token + head_sha from the /files review form.
-    const { token, headSha: formSha } = await getReviewFormData({ owner, repo, prNumber, origin })
-    const headSha = formSha || getHeadShaFromPage()
-    if (!token) throw new Error('could not obtain CSRF token')
-    if (!headSha) throw new Error('head_sha not found')
-
-    const res = await fetch(`${origin}/${owner}/${repo}/pull/${prNumber}/reviews`, {
-      method: 'POST',
-      credentials: 'include',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: new URLSearchParams({
-        '_method': 'put',
-        'pull_request_review[event]': 'approve',
-        'head_sha': headSha,
-        'authenticity_token': token,
-      }).toString(),
-    })
-    if (!res.ok) {
-      const text = await res.text()
-      throw new Error(`HTTP ${res.status}: ${text || res.statusText}`)
-    }
+  const res = await fetch(`${origin}/${owner}/${repo}/pull/${prNumber}/reviews`, {
+    method: 'POST',
+    credentials: 'include',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({
+      '_method': 'put',
+      'pull_request_review[event]': 'approve',
+      'head_sha': headSha,
+      'authenticity_token': token,
+    }).toString(),
+  })
+  if (!res.ok) {
+    const text = await res.text()
+    throw new Error(`HTTP ${res.status}: ${text || res.statusText}`)
   }
 }
 
@@ -245,12 +270,17 @@ const insertButton = () => {
     const origin = window.location.origin
     try {
       setApprovalInProgress(button)
-      await submitApprovalViaFetch({ owner, repo, prNumber, origin })
-      button.innerHTML = '✓ Approved'
-      button.classList.remove('btn-primary')
-      button.classList.add('btn-success')
-      button.disabled = true
-      navigate(`${origin}/${owner}/${repo}/pulls`)
+      if (location.hostname === 'github.com') {
+        // Navigates to /changes, fires PUT from there, then goes to /pulls.
+        beginChangesApproval({ owner, repo, prNumber, origin })
+      } else {
+        await submitApprovalViaFetch({ owner, repo, prNumber, origin })
+        button.innerHTML = '✓ Approved'
+        button.classList.remove('btn-primary')
+        button.classList.add('btn-success')
+        button.disabled = true
+        navigate(`${origin}/${owner}/${repo}/pulls`)
+      }
     } catch (err) {
       console.error(`[Quick Approve v${SCRIPT_VERSION}] error`, err)
       button.innerText = `✗ ${err.message.slice(0, 80)}`
@@ -320,6 +350,7 @@ const observeUrlChange = () => {
     }
   }
   insertWhenReady()
+  void resumeChangesPageApproval().catch((err) => console.error(`[Quick Approve v${SCRIPT_VERSION}] resumeChangesPageApproval error`, err))
   setupHotkey()
 }
 
